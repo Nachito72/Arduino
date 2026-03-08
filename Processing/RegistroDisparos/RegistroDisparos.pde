@@ -199,6 +199,7 @@ void serialEvent(Serial p) {
       float yawRel;
       if (Float.isNaN(yawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
         yawRel = 0;
+        yawRef = 0;
       } else {
         yawRel = yawRaw - yawRef;
         while (yawRel >  180) yawRel -= 360;
