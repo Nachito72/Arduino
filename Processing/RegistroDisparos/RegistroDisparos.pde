@@ -357,18 +357,19 @@ void cargarReproduccion(String ruta) {
         continue;
       }
       repDatos.add(t);
-      float tSeg = Float.parseFloat(t[0].trim().replace(',', '.'));
-      float roll = Float.parseFloat(t[2].trim().replace(',', '.'));
-      float yawRaw  = Float.parseFloat(t[1].trim().replace(',', '.'));
-      // Pitch lateral en campo 22 (t[0]=tSeg, t[1]=yaw, ... t[22]=pitchLat)
-      float pitchLat = (t.length > 22) ? Float.parseFloat(t[22].trim().replace(',', '.')) : 999;
-      // Capturar referencia la primera vez que pitch entra en rango
-      if (Float.isNaN(yawRef) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
+      float tSeg   = Float.parseFloat(t[0].trim().replace(',', '.'));
+      float roll   = Float.parseFloat(t[2].trim().replace(',', '.'));
+      float yawRaw = Float.parseFloat(t[1].trim().replace(',', '.'));
+      // Pitch lateral: campo 22 si existe, si no usar roll como proxy (igual que en vivo)
+      float pitchLat = (t.length > 22) ? Float.parseFloat(t[22].trim().replace(',', '.')) : roll;
+      // Capturar referencia la primera vez que pitch entra en rango (misma lógica que en vivo)
+      if ((Float.isNaN(yawRef) || yawRef == 0) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
         yawRef = yawRaw;
       }
       float yawRel;
       if (Float.isNaN(yawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
         yawRel = 0;
+        yawRef = 0;
       } else {
         yawRel = yawRaw - yawRef;
         while (yawRel >  180) yawRel -= 360;
