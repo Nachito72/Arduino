@@ -184,10 +184,10 @@ void serialEvent(Serial p) {
       float roll     = Float.parseFloat(t[1].trim());
       float yawRaw   = Float.parseFloat(t[0].trim());
       // Pitch lateral (campo 21, si el Arduino ya lo envía)
-      float pitchLat = (t.length > 21) ? Float.parseFloat(t[21].trim()) : 999;
+      float pitchLat = roll; // (t.length > 21) ? Float.parseFloat(t[21].trim()) : 999;
       // Referencia de rumbo: capturar la PRIMERA vez que pitch entra en rango
       // Una vez capturada, la referencia es permanente durante toda la sesión
-      if (Float.isNaN(yawRef) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
+      if ((Float.isNaN(yawRef) || yawRef == 0) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
         yawRef = yawRaw;
       }
       // Mientras no hay referencia (pitch nunca entró en rango) → mostrar 0
@@ -200,7 +200,7 @@ void serialEvent(Serial p) {
         while (yawRel >  180) yawRel -= 360;
         while (yawRel < -180) yawRel += 360;
       }
-      grafRoll.add(new float[]{ tSeg, roll });
+      grafRoll.add(new float[]{ tSeg, -roll });
       grafYaw.add(new float[]{ tSeg, yawRel });
     } catch (Exception e) {}
   }
@@ -362,7 +362,7 @@ void cargarReproduccion(String ruta) {
         while (yawRel >  180) yawRel -= 360;
         while (yawRel < -180) yawRel += 360;
       }
-      grafRoll.add(new float[]{ tSeg, roll });
+      grafRoll.add(new float[]{ tSeg, -roll });
       grafYaw.add(new float[]{ tSeg, yawRel });
     }
     br.close();
