@@ -19,10 +19,7 @@ final String DIR_BASE = System.getProperty("user.home") + File.separator + "Docu
 // Umbral de pitch lateral para capturar la referencia de rumbo
 // Solo cuando |pitchLat| está dentro de este rango se toma el primer yaw como 0°
 float PITCH_REF_MIN = -5.0;  // ← ajustar a mano si el sensor lo requiere
-float PITCH_REF_MAX =  5.0;
-
-// Ventana previa al disparo que se resalta en azul en las gráficas
-float PRESHOT_SEG = 0.200;  // ← 200 ms por defecto, ajustar a mano
+float PITCH_REF_MAX =  4.0;
 
 void verificarRuta() {
   println("📁 Guardando datos en: " + DIR_BASE);
@@ -162,10 +159,9 @@ void serialEvent(Serial p) {
     if (grabando) {
       shotCount++;
       shotPendiente = true;
+      // Marca disparo en gráfica con t actual
       float tSeg = (millis() - tInicioSesion) / 1000.0;
       grafShots.add(new float[]{ tSeg });
-      // Guardar el disparo en el buffer CSV para que quede en el fichero
-      bufferSesion.add(new String[]{ String.format(java.util.Locale.US, "%.4f", tSeg), "SHOT" });
     }
     return;
   }
@@ -347,14 +343,7 @@ void cargarReproduccion(String ruta) {
       if (primeraLinea) { titulo = linea; primeraLinea = false; continue; }
       if (linea.startsWith("tSeg")) continue; // cabecera columnas
       String[] t = split(linea, ',');
-      if (t.length < 22) {
-        // Puede ser una línea de disparo: tSeg,SHOT
-        if (t.length == 2 && t[1].trim().equals("SHOT")) {
-          float tShot = Float.parseFloat(t[0].trim().replace(',', '.'));
-          grafShots.add(new float[]{ tShot });
-        }
-        continue;
-      }
+      if (t.length < 22) continue;
       repDatos.add(t);
       float tSeg = Float.parseFloat(t[0].trim().replace(',', '.'));
       float roll = Float.parseFloat(t[2].trim().replace(',', '.'));
@@ -683,19 +672,8 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
     text(nf(t, 1, 2) + "s", xG, ay + ah + 2);
   }
 
-  // Marcas de disparo: zona azul previa + línea vertical + triángulo + punto sobre la curva
+  // Marcas de disparo: línea vertical + triángulo + punto sobre la curva
   if (showShots) {
-    // 1) Zona azul semitransparente PRESHOT_SEG segundos antes del disparo
-    for (float[] sh : grafShots) {
-      float xSh  = ax + map(sh[0],                tVisMin, tVisMax, 0, aw);
-      float xPre = ax + map(sh[0] - PRESHOT_SEG,  tVisMin, tVisMax, 0, aw);
-      xPre = max(xPre, ax);
-      xSh  = min(xSh,  ax + aw);
-      if (xSh < ax || xPre > ax + aw) continue;
-      noStroke(); fill(40, 120, 255, 55);
-      rect(xPre, ay, xSh - xPre, ah);
-    }
-    // 2) Línea vertical roja + triángulo
     for (float[] sh : grafShots) {
       float xSh = ax + map(sh[0], tVisMin, tVisMax, 0, aw);
       if (xSh < ax || xSh > ax + aw) continue;
