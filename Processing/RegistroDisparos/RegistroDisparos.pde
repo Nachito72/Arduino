@@ -16,6 +16,11 @@ final String PUERTO   = "COM7";   // ← Cambia al puerto de tu Arduino
 final int    BAUDRATE = 115200;
 final String DIR_BASE = System.getProperty("user.home") + File.separator + "Documents" + File.separator + "RegistroDisparos";  // carpeta raíz de grabaciones
 
+// Umbral de pitch lateral para capturar la referencia de rumbo
+// Solo cuando |pitchLat| está dentro de este rango se toma el primer yaw como 0°
+float PITCH_REF_MIN = -5.0;  // ← ajustar a mano si el sensor lo requiere
+float PITCH_REF_MAX =  5.0;
+
 void verificarRuta() {
   println("📁 Guardando datos en: " + DIR_BASE);
 }
@@ -180,16 +185,21 @@ void serialEvent(Serial p) {
       float yawRaw   = Float.parseFloat(t[0].trim());
       // Pitch lateral (campo 21, si el Arduino ya lo envía)
       float pitchLat = (t.length > 21) ? Float.parseFloat(t[21].trim()) : 999;
-      // Referencia de rumbo: capturar cuando pitch está en ±5°
-      if (abs(pitchLat) <= 5.0) {
-        if (Float.isNaN(yawRef)) yawRef = yawRaw;  // primera vez que entra en rango
-      } else {
-        yawRef = Float.NaN;   // fuera de rango: sin referencia, grafica 0
+      // Referencia de rumbo: capturar la PRIMERA vez que pitch entra en rango
+      // Una vez capturada, la referencia es permanente durante toda la sesión
+      if (Float.isNaN(yawRef) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
+        yawRef = yawRaw;
       }
-      float yawRel = Float.isNaN(yawRef) ? 0 : (yawRaw - yawRef);
-      // Normalizar a [-180, 180]
-      while (yawRel >  180) yawRel -= 360;
-      while (yawRel < -180) yawRel += 360;
+      // Mientras no hay referencia (pitch nunca entró en rango) → mostrar 0
+      // Con referencia → mostrar deriva respecto al primer yaw válido
+      float yawRel;
+      if (Float.isNaN(yawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
+        yawRel = 0;
+      } else {
+        yawRel = yawRaw - yawRef;
+        while (yawRel >  180) yawRel -= 360;
+        while (yawRel < -180) yawRel += 360;
+      }
       grafRoll.add(new float[]{ tSeg, roll });
       grafYaw.add(new float[]{ tSeg, yawRel });
     } catch (Exception e) {}
@@ -340,14 +350,18 @@ void cargarReproduccion(String ruta) {
       float yawRaw  = Float.parseFloat(t[1].trim().replace(',', '.'));
       // Pitch lateral en campo 22 (t[0]=tSeg, t[1]=yaw, ... t[22]=pitchLat)
       float pitchLat = (t.length > 22) ? Float.parseFloat(t[22].trim().replace(',', '.')) : 999;
-      if (abs(pitchLat) <= 5.0) {
-        if (Float.isNaN(yawRef)) yawRef = yawRaw;
-      } else {
-        yawRef = Float.NaN;
+      // Capturar referencia la primera vez que pitch entra en rango
+      if (Float.isNaN(yawRef) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
+        yawRef = yawRaw;
       }
-      float yawRel = Float.isNaN(yawRef) ? 0 : (yawRaw - yawRef);
-      while (yawRel >  180) yawRel -= 360;
-      while (yawRel < -180) yawRel += 360;
+      float yawRel;
+      if (Float.isNaN(yawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
+        yawRel = 0;
+      } else {
+        yawRel = yawRaw - yawRef;
+        while (yawRel >  180) yawRel -= 360;
+        while (yawRel < -180) yawRel += 360;
+      }
       grafRoll.add(new float[]{ tSeg, roll });
       grafYaw.add(new float[]{ tSeg, yawRel });
     }
@@ -864,5 +878,19 @@ void keyPressed() {
   // Z = resetear zoom X (ver todo)
   if (key == 'z' || key == 'Z') {
     tZoomMin = 0; tZoomMax = -1;
+  }
+  // Flechas ↑↓ = pan vertical en la gráfica bajo el cursor (solo si el ratón está sobre gráficas)
+  if (mouseX > LISTA_W && mouseY > HEADER_H) {
+    if (keyCode == UP || keyCode == DOWN) {
+      int grafIdx = (mouseY < GRAFICA_Y2) ? 0 : 1;
+      // Paso de desplazamiento: 10% del rango visible
+      float rango = zoomMax[grafIdx] - zoomMin[grafIdx];
+      float paso  = rango * 0.10;
+      if (paso < 0.001) paso = 0.001;
+      float delta = (keyCode == UP) ? paso : -paso;
+      zoomMin[grafIdx] += delta;
+      zoomMax[grafIdx] += delta;
+      zoomLocked[grafIdx] = true;  // fijar escala al hacer pan manual
+    }
   }
 }
