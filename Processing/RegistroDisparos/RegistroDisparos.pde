@@ -588,7 +588,7 @@ void dibujarGraficas() {
 
   dibujarGrafica(gx0, GRAFICA_Y2 + 30, gw0, GRAFICA_H - 30,
                  "YAW / Rumbo (°)", grafYaw, COL_YAW,
-                 zoomMin[1], zoomMax[1], tVisMin, tVisMax, false, 1);
+                 zoomMin[1], zoomMax[1], tVisMin, tVisMax, true, 1);
 }
 
 void dibujarGrafica(int gx, int gy, int gw, int gh,
@@ -672,7 +672,7 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
     text(nf(t, 1, 2) + "s", xG, ay + ah + 2);
   }
 
-  // Marcas de disparo
+  // Marcas de disparo: línea vertical + triángulo + punto sobre la curva
   if (showShots) {
     for (float[] sh : grafShots) {
       float xSh = ax + map(sh[0], tVisMin, tVisMax, 0, aw);
@@ -695,6 +695,26 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
     vertex(xP, yP);
   }
   endShape();
+
+  // Círculo sobre la curva en el instante de cada disparo (dibujado encima de la curva)
+  if (showShots) {
+    for (float[] sh : grafShots) {
+      float xSh = ax + map(sh[0], tVisMin, tVisMax, 0, aw);
+      if (xSh < ax || xSh > ax + aw) continue;
+      // Buscar el valor de la curva más cercano al tiempo del disparo
+      float valSh = Float.NaN;
+      float distMin = Float.MAX_VALUE;
+      for (float[] punto : datos) {
+        float d = abs(punto[0] - sh[0]);
+        if (d < distMin) { distMin = d; valSh = punto[1]; }
+      }
+      if (!Float.isNaN(valSh)) {
+        float ySh = ay + ah - map(constrain(valSh, vMin, vMax), vMin, vMax, 0, ah);
+        fill(COL_SHOT); stroke(255); strokeWeight(1.5);
+        ellipse(xSh, ySh, 10, 10);
+      }
+    }
+  }
 
   // Línea de cursor vertical + valor interpolado
   if (cursorTSeg >= tVisMin && cursorTSeg <= tVisMax) {
