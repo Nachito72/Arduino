@@ -31,9 +31,16 @@ enum ShotType : uint8_t {
 Adafruit_BNO055 bno = Adafruit_BNO055();
 
 // ===================== ARMADO POR INCLINACIÓN =====================
-// Usamos roll (euler.y) y un pitch "nivelado" que vale cerca de 0 tanto en 0° como en 180°
-const float LEVEL_ON_DEG  = 15.0;
-const float LEVEL_OFF_DEG = 20.0;
+// euler.y() = roll: negativo=apunta arriba, positivo=apunta abajo, 0=horizontal
+// Rango válido de roll: [-80°, +20°]  →  apuntando alto hasta un poco bajo del centro
+// ARMED si: roll en [-80°, +20°] Y pitch en rango (no ladeada)
+// DISARMED si: roll < -85° o roll > +25° O pitch fuera de rango (ladeada)
+const float PITCH_ON_DEG   = 15.0;  // pitch máximo para armar (arma derecha)
+const float PITCH_OFF_DEG  = 20.0;  // pitch mínimo para desarmar (arma de lado)
+const float ROLL_MIN_ON    = -80.0; // roll mínimo para armar (no apuntar demasiado alto)
+const float ROLL_MAX_ON    =  20.0; // roll máximo para armar (límite hacia abajo)
+const float ROLL_MIN_OFF   = -85.0; // roll mínimo antes de desarmar (histéresis)
+const float ROLL_MAX_OFF   =  25.0; // roll máximo antes de desarmar (histéresis)
 
 const uint8_t LEVEL_ON_COUNT  = 5;   // con IMU_PERIOD_MS=10 => 50ms
 const uint8_t LEVEL_OFF_COUNT = 8;   // con IMU_PERIOD_MS=10 => 80ms
@@ -198,17 +205,18 @@ uint32_t nextImuMs = 0;
 
 void updateArmingFromTilt() {
   imu::Vector<3> e = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-  float roll  = e.y();
-  float pitch = e.z();
+  float roll  = -e.y();  // positivo = apuntando hacia arriba
+  float pitch = e.z();  // indica inclinación lateral (arma de lado)
 
-  float r = f_abs(roll);
-  float p = pitchLevelDeg(pitch);
+  float p = pitchLevelDeg(pitch); // distancia a 0° o 180°
 
-  bool levelOn  = (r <= LEVEL_ON_DEG)  && (p <= LEVEL_ON_DEG);
-  bool levelOff = (r >= LEVEL_OFF_DEG) || (p >= LEVEL_OFF_DEG);
+  // ARMAR: roll dentro del rango válido [-80°, +20°] Y pitch en rango (no ladeada)
+  bool canArm       = (p <= PITCH_ON_DEG)  && (roll >= ROLL_MIN_ON)  && (roll <= ROLL_MAX_ON);
+  // DESARMAR: pitch fuera de rango O roll fuera del rango con histéresis [-85°, +25°]
+  bool shouldDisarm = (p >= PITCH_OFF_DEG) || (roll < ROLL_MIN_OFF) || (roll > ROLL_MAX_OFF);
 
   if (!armed) {
-    if (levelOn) {
+    if (canArm) {
       if (levelOnStreak < 255) levelOnStreak++;
     } else {
       levelOnStreak = 0;
@@ -222,7 +230,7 @@ void updateArmingFromTilt() {
       Serial.println("ARMED");
     }
   } else {
-    if (levelOff) {
+    if (shouldDisarm) {
       if (levelOffStreak < 255) levelOffStreak++;
     } else {
       levelOffStreak = 0;
@@ -277,8 +285,9 @@ void loop() {
     if (armed) {
       // Euler (macro movimiento)
       imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-      float pitchOut = euler.x();
-      float yawOut   = -euler.y();
+      float pitchOut  = euler.x();
+      float yawOut    = -euler.y();
+      float pitchLat  = euler.z();  // inclinación lateral (para referencia rumbo)
 
       // Gyro → grados/segundo
       imu::Vector<3> gyro = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
@@ -287,22 +296,57 @@ void loop() {
       float gx = gyro.x() * RAD2DEG;
       float gy = gyro.y() * RAD2DEG;
       float gz = gyro.z() * RAD2DEG;
-
       float gmag = sqrt(gx*gx + gy*gy + gz*gz);
+
+      // Aceleración lineal (sin gravedad) → m/s²
+      imu::Vector<3> linacc = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+      float lax = linacc.x();
+      float lay = linacc.y();
+      float laz = linacc.z();
+      float lamag = sqrt(lax*lax + lay*lay + laz*laz);
+
+      // Aceleración total (con gravedad) → m/s²
+      imu::Vector<3> acc = bno.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+      float ax = acc.x();
+      float ay = acc.y();
+      float az = acc.z();
+
+      // Temperatura → °C
+      int8_t temp = bno.getTemp();
+
+      // Magnetómetro crudo → µT
+      imu::Vector<3> mag = bno.getVector(Adafruit_BNO055::VECTOR_MAGNETOMETER);
+      float mx = mag.x();
+      float my = mag.y();
+      float mz = mag.z();
 
       uint8_t cs, cg, ca, cm;
       bno.getCalibration(&cs, &cg, &ca, &cm);
 
+      // Formato CSV:
+      // yaw,roll,gx,gy,gz,gmag,lax,lay,laz,lamag,ax,ay,az,temp,mx,my,mz,cs,cg,ca,cm,pitchLat
       Serial.print(pitchOut, 4); Serial.print(",");
       Serial.print(yawOut, 4);   Serial.print(",");
       Serial.print(gx, 4);       Serial.print(",");
       Serial.print(gy, 4);       Serial.print(",");
       Serial.print(gz, 4);       Serial.print(",");
       Serial.print(gmag, 4);     Serial.print(",");
+      Serial.print(lax, 4);      Serial.print(",");
+      Serial.print(lay, 4);      Serial.print(",");
+      Serial.print(laz, 4);      Serial.print(",");
+      Serial.print(lamag, 4);    Serial.print(",");
+      Serial.print(ax, 4);       Serial.print(",");
+      Serial.print(ay, 4);       Serial.print(",");
+      Serial.print(az, 4);       Serial.print(",");
+      Serial.print(temp);        Serial.print(",");
+      Serial.print(mx, 4);       Serial.print(",");
+      Serial.print(my, 4);       Serial.print(",");
+      Serial.print(mz, 4);       Serial.print(",");
       Serial.print(cs);          Serial.print(",");
       Serial.print(cg);          Serial.print(",");
       Serial.print(ca);          Serial.print(",");
-      Serial.println(cm);
+      Serial.print(cm);           Serial.print(",");
+      Serial.println(pitchLat, 4);
     }
   }
 
