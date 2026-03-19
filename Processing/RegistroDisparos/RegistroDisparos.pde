@@ -13,7 +13,12 @@ import java.io.FileReader;
 import java.text.SimpleDateFormat;
 
 // ===================== CONFIGURACIÓN =====================
-final String PUERTO   = "COM7";   // ← Cambia al puerto de tu Arduino
+// Windows:
+String PUERTO = "COM7";
+
+// Mac:
+//String PUERTO = "/dev/cu.usbmodem14101";  // el número varía
+
 final int    BAUDRATE = 500000;
 final String DIR_BASE = System.getProperty("user.home") + File.separator + "Documents" + File.separator + "RegistroDisparos";  // carpeta raíz de grabaciones
 
