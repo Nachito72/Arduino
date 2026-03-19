@@ -1,13 +1,15 @@
-#include <Wire.h>
+﻿#include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 
 // ===================== LED DISPARO (parpadeo) =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
 
-// Parpadeo visible
-const uint16_t LED_BLINK_PERIOD_MS = 200;  // 200ms = 5 Hz (muy visible)
-const uint16_t LED_BLINK_TOTAL_MS  = 3000; // 3 segundos parpadeando
+// Frecuencia y duración del parpadeo del LED al detectar un disparo.
+// Subir LED_BLINK_PERIOD_MS → parpadeo más lento (menos visible).
+// Subir LED_BLINK_TOTAL_MS  → parpadea durante más tiempo.
+const uint16_t LED_BLINK_PERIOD_MS = 200;  // duración de cada ciclo on/off (ms). 200 ms = 5 Hz.
+const uint16_t LED_BLINK_TOTAL_MS  = 3000; // tiempo total de parpadeo tras un disparo (ms).
 
 bool ledBlinkActive = false;
 uint32_t ledBlinkEndMs = 0;
@@ -31,19 +33,33 @@ enum ShotType : uint8_t {
 Adafruit_BNO055 bno = Adafruit_BNO055();
 
 // ===================== ARMADO POR INCLINACIÓN =====================
-// euler.y() = roll: negativo=apunta arriba, positivo=apunta abajo, 0=horizontal
-// Rango válido de roll: [-80°, +20°]  →  apuntando alto hasta un poco bajo del centro
-// ARMED si: roll en [-80°, +20°] Y pitch en rango (no ladeada)
-// DISARMED si: roll < -85° o roll > +25° O pitch fuera de rango (ladeada)
-const float PITCH_ON_DEG   = 15.0;  // pitch máximo para armar (arma derecha)
-const float PITCH_OFF_DEG  = 20.0;  // pitch mínimo para desarmar (arma de lado)
-const float ROLL_MIN_ON    = -80.0; // roll mínimo para armar (no apuntar demasiado alto)
-const float ROLL_MAX_ON    =  20.0; // roll máximo para armar (límite hacia abajo)
-const float ROLL_MIN_OFF   = -85.0; // roll mínimo antes de desarmar (histéresis)
-const float ROLL_MAX_OFF   =  25.0; // roll máximo antes de desarmar (histéresis)
+// Geometría del arma montada con el BNO055:
+//   ROLL  : rotación sobre X. Arma en posición de tiro → aprox. -60° a -130°.
+//           Más negativo = más elevada. Más positivo = más baja o volcada.
+//   PITCH : rotación sobre Y. Negativo = apunta arriba, positivo = apunta abajo.
+//           Rango válido: desde -90° (al cielo) hasta +10° (ligeramente abajo).
+//
+// Rangos de ARME:
+//   ROLL  ∈ [-130°, -60°]   →  ROLL_MIN_ON / ROLL_MAX_ON
+//   PITCH ∈ [ -90°, +10°]   →  PITCH_MIN_ON / PITCH_MAX_ON
+//
+// Rangos de DESARME (histéresis ±3°):
+//   ROLL  fuera de [-133°, -57°]  →  ROLL_MIN_OFF / ROLL_MAX_OFF
+//   PITCH fuera de [ -93°, +13°]  →  PITCH_MIN_OFF / PITCH_MAX_OFF
+const float ROLL_MIN_ON    = -130.0f;
+const float ROLL_MAX_ON    =  -60.0f;
+const float PITCH_MIN_ON   =  -90.0f;
+const float PITCH_MAX_ON   =   10.0f;
 
-const uint8_t LEVEL_ON_COUNT  = 5;   // con IMU_PERIOD_MS=10 => 50ms
-const uint8_t LEVEL_OFF_COUNT = 8;   // con IMU_PERIOD_MS=10 => 80ms
+const float ROLL_MIN_OFF   = -133.0f;
+const float ROLL_MAX_OFF   =  -57.0f;
+const float PITCH_MIN_OFF  =  -93.0f;
+const float PITCH_MAX_OFF  =   13.0f;
+
+// LEVEL_ON_COUNT  : lecturas consecutivas en rango para ARMAR   (5 × 10ms = 50ms)
+// LEVEL_OFF_COUNT : lecturas consecutivas fuera  para DESARMAR  (8 × 10ms = 80ms)
+const uint8_t LEVEL_ON_COUNT  = 5;
+const uint8_t LEVEL_OFF_COUNT = 8;
 
 bool armed = false;
 uint8_t levelOnStreak = 0;
@@ -51,41 +67,72 @@ uint8_t levelOffStreak = 0;
 
 static inline float f_abs(float v) { return (v < 0) ? -v : v; }
 
-// Distancia angular a “nivel”: 0° o 180° (lo que esté más cerca)
-float pitchLevelDeg(float pitchDeg) {
-  float ap = f_abs(pitchDeg);
-  float d180 = f_abs(180.0f - ap);
-  return (ap < d180) ? ap : d180;
-}
-
 // ===================== MIC / DETECTOR =====================
-const uint8_t MIC_PIN = A0;
+const uint8_t MIC_PIN = A1;   // pin analógico donde está conectado el micrófono
 
-const uint16_t MIC_DELAY_US = 250;      // ~4 kHz
-const uint16_t CONFIRM_SAMPLES = 80;    // ~20 ms
-const uint16_t COOLDOWN_MS = 250;
+// MIC_DELAY_US : tiempo de espera entre muestras del ADC.
+//   250 µs → frecuencia de muestreo ~4 kHz (4000 muestras/segundo).
+//   Bajar → más muestras por segundo, captura pulsos más cortos, pero deja menos
+//           tiempo para el resto del loop (IMU, Serial).
+//   Subir → menos carga de CPU pero puede perderse el disparo si es muy breve.
+const uint16_t MIC_DELAY_US = 250;
 
-// Envelope/Base (enteros)
+// CONFIRM_SAMPLES : número máximo de muestras que dura una ventana de candidato.
+//   Si en ese tiempo no se confirma el disparo, se descarta el candidato.
+//   80 muestras × 250 µs = 20 ms de ventana. El disparo real dura ~20 ms en la traza.
+//   Subir → ventana más larga, detecta disparos con ataque más lento.
+//   Bajar → ventana más corta, descarta antes eventos dudosos.
+const uint16_t CONFIRM_SAMPLES = 80;
+
+// COOLDOWN_MS : tiempo mínimo entre dos disparos consecutivos detectados.
+//   Evita que un mismo disparo se detecte dos veces.
+//   500 ms = 0.5 s. Bajar si los disparos son muy seguidos (tiro rápido).
+const uint16_t COOLDOWN_MS = 5000;
+
+// Funciones EMA (media móvil exponencial) para calcular envelope y base.
+// ema_div(current, target, n): mueve current hacia target en pasos de 1/2^n.
+//   n=2 → converge en ~4 muestras (rápido, para el envelope de la señal).
+//   n=8 → converge en ~256 muestras (lento, para la base de ruido ambiente).
 static inline uint16_t ema_div(uint16_t current, uint16_t target, uint8_t divPow2) {
   int32_t diff = (int32_t)target - (int32_t)current;
   return (uint16_t)((int32_t)current + (diff >> divPow2));
 }
+// Valor absoluto de un int16_t devuelto como uint16_t.
 static inline uint16_t u16abs(int16_t v) { return (v < 0) ? (uint16_t)(-v) : (uint16_t)v; }
 
-uint16_t env = 0;
+// env  : envelope de la señal (sigue los picos de amplitud rápidamente).
+// base : nivel de ruido ambiente (sigue el envelope muy lentamente).
+uint16_t env  = 0;
 uint16_t base = 0;
 
+// MARGIN_ON  : cuánto debe subir el envelope (env) sobre la base para abrir
+//              la ventana de candidato. Es la sensibilidad del disparo.
+//   Subir → menos sensible, ignora ruidos pequeños (menos falsos positivos).
+//   Bajar → más sensible, abre el candidato con señales más débiles (más falsos positivos).
+//   Traza: baseline env ~0, disparo sube env a ~174 en la primera muestra. 90 es seguro.
 uint16_t MARGIN_ON  = 90;
+
+// MARGIN_OFF : umbral por debajo del cual el envelope se considera "en silencio".
+//   Solo se usa para contar widthSamples (ancho del pulso). No afecta a la detección actual.
+//   Mantener ~MARGIN_ON/2.
 uint16_t MARGIN_OFF = 45;
 
-const uint16_t SAT_LOW  = 5;
-const uint16_t SAT_HIGH = 1018;
+// SAT_LOW / SAT_HIGH : límites heredados de versiones anteriores del detector.
+//   Ya no se usan en la lógica de detección actual (RANGE_MIN la reemplaza).
+//   Se conservan por referencia.
+const uint16_t SAT_LOW  = 7;
+const uint16_t SAT_HIGH = 700;
 
-uint16_t PEAK_ELEC_MIN     = 170;
-uint16_t WIDTH_ELEC_MIN_US = 6000;
-uint16_t RANGE_ELEC_MIN    = 250;
+// RANGE_MIN : rango ADC pico-a-pico mínimo (maxRaw - minRaw) dentro del candidato
+//             para confirmar un disparo mecánico.
+//   Traza real del disparo: rango = 713 (vmin=7, vmax=720).
+//   Baseline (silencio): rango ~22 (427-449). Hay margen enorme.
+//   → Subir si hay falsos positivos (exige una señal más fuerte para disparar).
+//   → Bajar si no detecta disparos reales (acepta señales más débiles).
+//   Ejemplo: 400 = muy seguro | 300 = más sensible | 500 = muy exigente.
+const uint16_t RANGE_MIN = 100;
 
-int16_t micCenter = 512;
+int16_t micCenter = 444;
 uint32_t lastShotMs = 0;
 
 bool candidate = false;
@@ -97,6 +144,18 @@ uint16_t peakAbs = 0;
 
 uint16_t widthSamples = 0;
 bool aboveOff = false;
+
+// Cooldown en muestras (ISR no puede usar millis())
+// ===================== Muestreo mic por scheduler de micros() =====================
+// Una muestra ADC por vuelta de loop(). El loop corre libre entre ciclos IMU,
+// dando ~300-500 muestras/segundo —suficiente para capturar el flanco del disparo
+// (~5 ms de duración) sin bloquear el scheduler IMU.
+// MIC_TICK_US: cadencia mínima entre muestras. 1000 µs = 1 kHz.
+// El loop no se bloquea: si no ha pasado el tick, pasa de largo sin leer el ADC.
+const uint32_t MIC_TICK_US = 1000;  // 1 kHz — 1 muestra cada 1 ms como máximo
+uint32_t nextMicUs = 0;             // micros() del próximo tick habilitado
+
+bool shotFlag = false;              // disparo detectado, pendiente de enviar
 
 void calibrateMicCenter() {
   int32_t sum = 0;
@@ -134,14 +193,13 @@ void resetMicCandidate() {
   aboveOff = false;
 }
 
-// Devuelve evento cuando detecta; si no, SHOT_NONE
-ShotType micUpdate() {
-  if (!armed) return SHOT_NONE;
+// Procesa una muestra del micrófono. Se llama desde loop() (nunca desde ISR).
+// raw: valor devuelto por analogRead(MIC_PIN), leído en loop() sin interrupciones.
+// nowMs: millis() actual para gestionar el cooldown sin depender de ISR.
+ShotType micUpdate(uint16_t raw, uint32_t nowMs) {
+  // Cooldown: ignorar muestras hasta que haya pasado COOLDOWN_MS desde el último disparo
+  if (lastShotMs != 0 && (nowMs - lastShotMs) < COOLDOWN_MS) return SHOT_NONE;
 
-  uint32_t nowMs = millis();
-  if (nowMs - lastShotMs < COOLDOWN_MS) return SHOT_NONE;
-
-  uint16_t raw = analogRead(MIC_PIN);
   int16_t centered = (int16_t)raw - micCenter;
   uint16_t mag = u16abs(centered);
 
@@ -168,28 +226,9 @@ ShotType micUpdate() {
   updateWidth(env, thrOff);
 
   uint16_t range = maxRawSeen - minRawSeen;
-  uint32_t width_us = (uint32_t)widthSamples * (uint32_t)MIC_DELAY_US;
-
-  bool isMech = (minRawSeen <= SAT_LOW) || (maxRawSeen >= SAT_HIGH);
-  bool isElec =
-    !isMech &&
-    width_us >= WIDTH_ELEC_MIN_US &&
-    (peakAbs >= PEAK_ELEC_MIN || range >= RANGE_ELEC_MIN);
-
-  // ✅ FIX 1: permitir MECH o ELEC (antes tenías isElec deshabilitado)
-
-  if (isMech) {// || isElec) {
-    candidate = false;
-    lastShotMs = nowMs;
-    
-    // 🔴 LED disparo
-    startShotBlink(nowMs); 
-
-    //digitalWrite(LED_SHOT_PIN, HIGH);
-    //ledShotOn = true;
-    //ledShotOffMs = nowMs + LED_SHOT_MS;
-
-    return isMech ? SHOT_MECH : SHOT_ELEC;
+  if (range >= RANGE_MIN) {
+    resetMicCandidate();
+    return SHOT_MECH;
   }
 
   if (candCount >= CONFIRM_SAMPLES) {
@@ -203,17 +242,16 @@ ShotType micUpdate() {
 const uint32_t IMU_PERIOD_MS = 10; // 100 Hz
 uint32_t nextImuMs = 0;
 
-void updateArmingFromTilt() {
-  imu::Vector<3> e = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-  float roll  = -e.y();  // positivo = apuntando hacia arriba
-  float pitch = e.z();  // indica inclinación lateral (arma de lado)
+void updateArmingFromTilt(float roll, float pitch) {
+  // roll y pitch ya leídos fuera: evita segunda llamada I2C por ciclo
 
-  float p = pitchLevelDeg(pitch); // distancia a 0° o 180°
+  // ARMAR: roll ∈ [-130°, -60°]  Y  pitch ∈ [-90°, +10°]
+  bool canArm = (roll  >= ROLL_MIN_ON  && roll  <= ROLL_MAX_ON) &&
+                (pitch >= PITCH_MIN_ON && pitch <= PITCH_MAX_ON);
 
-  // ARMAR: roll dentro del rango válido [-80°, +20°] Y pitch en rango (no ladeada)
-  bool canArm       = (p <= PITCH_ON_DEG)  && (roll >= ROLL_MIN_ON)  && (roll <= ROLL_MAX_ON);
-  // DESARMAR: pitch fuera de rango O roll fuera del rango con histéresis [-85°, +25°]
-  bool shouldDisarm = (p >= PITCH_OFF_DEG) || (roll < ROLL_MIN_OFF) || (roll > ROLL_MAX_OFF);
+  // DESARMAR (con histéresis ±3°): cualquier eje fuera de su ventana ampliada
+  bool shouldDisarm = (roll  < ROLL_MIN_OFF  || roll  > ROLL_MAX_OFF) ||
+                      (pitch < PITCH_MIN_OFF || pitch > PITCH_MAX_OFF);
 
   if (!armed) {
     if (canArm) {
@@ -247,7 +285,7 @@ void updateArmingFromTilt() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(500000);
 
   pinMode(LED_SHOT_PIN, OUTPUT);
   digitalWrite(LED_SHOT_PIN, LOW);
@@ -269,105 +307,80 @@ void setup() {
     delay(2);
   }
 
+  nextMicUs = micros();
   nextImuMs = millis();
   Serial.println("Ready");
   Serial.println("DISARMED");
 }
 
 void loop() {
-  // 1) scheduler IMU: actualiza armado y, si armed, envía datos
   uint32_t nowMs = millis();
+  uint32_t nowUs = micros();
+
+  // 1) Mic: una sola muestra ADC por vuelta de loop.
+  //    El loop corre libre ~300-400 veces/segundo entre ciclos IMU de 10 ms,
+  //    lo que da una cadencia real de ~300-400 Hz —suficiente para el flanco
+  //    del disparo (~5 ms de duración) sin bloquear el IMU.
+  //    Si ya pasó el tick programado, toma la muestra y avanza el scheduler.
+  //    Si aún no ha llegado, no hace nada y regresa inmediatamente.
+  if ((int32_t)(nowUs - nextMicUs) >= 0) {
+    uint16_t raw = analogRead(MIC_PIN);
+    ShotType st = micUpdate(raw, nowMs);
+    if (st != SHOT_NONE) shotFlag = true;
+    nextMicUs += MIC_TICK_US;
+  }
+
+  // 2) Comprobar flag de disparo
+  if (shotFlag) {
+    shotFlag = false;
+    lastShotMs = nowMs;
+    startShotBlink(nowMs);
+    Serial.println("SHOT,MECH");
+  }
+
+  // 3) scheduler IMU: una sola lectura I2C por ciclo para arming + serial
   if ((int32_t)(nowMs - nextImuMs) >= 0) {
     nextImuMs += IMU_PERIOD_MS;
 
-    updateArmingFromTilt();
+    // Cuaternión: 14 bits de precisión por componente (~0.004° de resolución)
+    // vs Euler del BNO055: solo 1/16° = 0.0625°
+    imu::Quaternion q = bno.getQuat();
+    double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
+
+    // Convertir a ángulos de Euler (rad → grados) para arming
+    // Convención: roll = rotación sobre X, pitch = sobre Y, yaw = sobre Z
+    const double R2D = 57.29577951;
+    double sinr = 2.0*(qw*qx + qy*qz);
+    double cosr = 1.0 - 2.0*(qx*qx + qy*qy);
+    double rollDeg  = atan2(sinr, cosr) * R2D;
+
+    double sinp = 2.0*(qw*qy - qz*qx);
+    double pitchDeg = (fabs(sinp) >= 1.0) ? copysign(90.0, sinp) : asin(sinp) * R2D;
+
+    double siny = 2.0*(qw*qz + qx*qy);
+    double cosy = 1.0 - 2.0*(qy*qy + qz*qz);
+    double yawDeg   = atan2(siny, cosy) * R2D;
+    if (yawDeg < 0) yawDeg += 360.0;
+
+    // Para arming usamos roll y pitchLat (pitchDeg)
+    updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
     if (armed) {
-      // Euler (macro movimiento)
-      imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-      float pitchOut  = euler.x();
-      float yawOut    = -euler.y();
-      float pitchLat  = euler.z();  // inclinación lateral (para referencia rumbo)
-
-      // Gyro → grados/segundo
-      imu::Vector<3> gyro = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
-      const float RAD2DEG = 57.2957795f;
-
-      float gx = gyro.x() * RAD2DEG;
-      float gy = gyro.y() * RAD2DEG;
-      float gz = gyro.z() * RAD2DEG;
-      float gmag = sqrt(gx*gx + gy*gy + gz*gz);
-
-      // Aceleración lineal (sin gravedad) → m/s²
-      imu::Vector<3> linacc = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
-      float lax = linacc.x();
-      float lay = linacc.y();
-      float laz = linacc.z();
-      float lamag = sqrt(lax*lax + lay*lay + laz*laz);
-
-      // Aceleración total (con gravedad) → m/s²
-      imu::Vector<3> acc = bno.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
-      float ax = acc.x();
-      float ay = acc.y();
-      float az = acc.z();
-
-      // Temperatura → °C
-      int8_t temp = bno.getTemp();
-
-      // Magnetómetro crudo → µT
-      imu::Vector<3> mag = bno.getVector(Adafruit_BNO055::VECTOR_MAGNETOMETER);
-      float mx = mag.x();
-      float my = mag.y();
-      float mz = mag.z();
-
-      uint8_t cs, cg, ca, cm;
-      bno.getCalibration(&cs, &cg, &ca, &cm);
-
-      // Formato CSV:
-      // yaw,roll,gx,gy,gz,gmag,lax,lay,laz,lamag,ax,ay,az,temp,mx,my,mz,cs,cg,ca,cm,pitchLat
-      Serial.print(pitchOut, 4); Serial.print(",");
-      Serial.print(yawOut, 4);   Serial.print(",");
-      Serial.print(gx, 4);       Serial.print(",");
-      Serial.print(gy, 4);       Serial.print(",");
-      Serial.print(gz, 4);       Serial.print(",");
-      Serial.print(gmag, 4);     Serial.print(",");
-      Serial.print(lax, 4);      Serial.print(",");
-      Serial.print(lay, 4);      Serial.print(",");
-      Serial.print(laz, 4);      Serial.print(",");
-      Serial.print(lamag, 4);    Serial.print(",");
-      Serial.print(ax, 4);       Serial.print(",");
-      Serial.print(ay, 4);       Serial.print(",");
-      Serial.print(az, 4);       Serial.print(",");
-      Serial.print(temp);        Serial.print(",");
-      Serial.print(mx, 4);       Serial.print(",");
-      Serial.print(my, 4);       Serial.print(",");
-      Serial.print(mz, 4);       Serial.print(",");
-      Serial.print(cs);          Serial.print(",");
-      Serial.print(cg);          Serial.print(",");
-      Serial.print(ca);          Serial.print(",");
-      Serial.print(cm);           Serial.print(",");
-      Serial.println(pitchLat, 4);
+      // Enviar cuaternión como 4 floats: w,x,y,z
+      // Processing recalcula roll/yaw/pitchLat con precisión double
+      Serial.print(qw, 6); Serial.print(",");
+      Serial.print(qx, 6); Serial.print(",");
+      Serial.print(qy, 6); Serial.print(",");
+      Serial.println(qz, 6);
     }
   }
 
-  // 2) Detector disparo: muestrea varias veces para no perder el pulso
-  // ✅ FIX 2: "mic burst" para mantener muestreo alto aunque IMU/Serial tarden
-  for (uint8_t i = 0; i < 6; i++) { // 6*250us ≈ 1.5ms por loop extra
-    ShotType st = micUpdate();
-    if (st == SHOT_MECH) {
-      Serial.println("SHOT,MECH");
-    } else if (st == SHOT_ELEC) {
-      Serial.println("SHOT,ELEC");
-    }
-    delayMicroseconds(MIC_DELAY_US);
-  }
   // ⏱ apagar LED disparo sin bloquear
   //if (ledShotOn && millis() >= ledShotOffMs) {
   //  digitalWrite(LED_SHOT_PIN, LOW);
   //  ledShotOn = false;
   //}
   // ===================== LED blink update =====================
-  
   if (ledBlinkActive) {
     if ((int32_t)(nowMs - ledBlinkEndMs) >= 0) {
       ledBlinkActive = false;
