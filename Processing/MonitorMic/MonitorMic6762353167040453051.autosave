@@ -1,0 +1,80 @@
+import processing.serial.*;
+
+// ── Configuración ────────────────────────────────────────────────
+final String PUERTO   = "COM7";
+final int    BAUDRATE = 115200;
+final int    HISTORIA = 800;    // muestras visibles en pantalla
+
+// ── Buffer ───────────────────────────────────────────────────────
+float[] buf = new float[HISTORIA];
+int     head = 0;
+
+// ── Serie ────────────────────────────────────────────────────────
+Serial puerto;
+  
+// ─────────────────────────────────────────────────────────────────
+void setup() {
+  size(1000, 400);
+  background(15);
+
+  try {
+    puerto = new Serial(this, PUERTO, BAUDRATE);
+    puerto.bufferUntil('\n');
+  } catch (Exception e) {
+    println("Puerto no disponible. Puertos: " + join(Serial.list(), ", "));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+void serialEvent(Serial p) {
+  String s = trim(p.readString());
+  if (s == null || s.length() == 0) return;
+  try {
+    float v = Float.parseFloat(s);
+    buf[head] = v;
+    head = (head + 1) % HISTORIA;
+  } catch (Exception e) {}
+}
+
+// ─────────────────────────────────────────────────────────────────
+void draw() {
+  background(15);
+
+  int ax = 50, ay = 20, aw = width - 60, ah = height - 50;
+
+  // Marco
+  noFill(); stroke(60); strokeWeight(1);
+  rect(ax, ay, aw, ah);
+
+  // Líneas de referencia horizontales
+  stroke(45); strokeWeight(1);
+  textSize(10); fill(100); textAlign(RIGHT, CENTER);
+  for (int v = 0; v <= 1023; v += 200) {
+    float y = ay + map(v, 1023, 0, 0, ah);
+    line(ax, y, ax + aw, y);
+    text(v, ax - 4, y);
+  }
+
+  // Línea 512 (centro)
+  stroke(70); strokeWeight(1);
+  float y512 = ay + map(512, 1023, 0, 0, ah);
+  line(ax, y512, ax + aw, y512);
+  fill(90); text("512", ax - 4, y512);
+
+  // Curva A0
+  stroke(80, 200, 255); strokeWeight(1.5); noFill();
+  beginShape();
+  for (int i = 0; i < HISTORIA; i++) {
+    int idx = (head + i) % HISTORIA;
+    float x = ax + map(i, 0, HISTORIA - 1, 0, aw);
+    float y = ay + map(buf[idx], 1023, 0, 0, ah);
+    vertex(x, y);
+  }
+  endShape();
+
+  // Valor actual
+  int prev = (head - 1 + HISTORIA) % HISTORIA;
+  fill(80, 200, 255); noStroke();
+  textSize(13); textAlign(LEFT, TOP);
+  text("A0 = " + (int)buf[prev], ax + 6, ay + 6);
+}
