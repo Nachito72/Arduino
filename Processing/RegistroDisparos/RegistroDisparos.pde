@@ -1,4 +1,3 @@
-
 import processing.serial.*;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -14,10 +13,13 @@ import java.text.SimpleDateFormat;
 
 // ===================== CONFIGURACIÓN =====================
 // Windows:
-String PUERTO = "COM7";
+//String PUERTO = "COM7";
 
 // Mac:
 //String PUERTO = "/dev/cu.usbmodem14101";  // el número varía
+
+// Linux:
+final String PUERTO   = "/dev/ttyACM0";  // ← Cambia al puerto de tu Arduino
 
 final int    BAUDRATE = 500000;
 final String DIR_BASE = System.getProperty("user.home") + File.separator + "Documents" + File.separator + "RegistroDisparos";  // carpeta raíz de grabaciones
@@ -130,6 +132,10 @@ float cursorTSeg = -1;    // segundo bajo el cursor del ratón
 // Botón "Zoom disparo" — coordenadas calculadas en dibujarGraficas() y usadas en mousePressed()
 int btnZoomX, btnZoomY, btnZoomW = 110, btnZoomH = 20;
 boolean zoomDisparoActivo = false;  // toggle: true=zoom sobre disparo, false=vista completa
+
+// Botón "Diana" — ver trayectoria del disparo centrada en el punto de impacto
+int btnDianaX, btnDianaY, btnDianaW = 90, btnDianaH = 20;
+boolean modoDiana = false;
 
 // Botón "Alinear trazas" — solo visible en modo comparar
 int btnAlinearX, btnAlinearY, btnAlinearW = 130, btnAlinearH = 20;
@@ -301,6 +307,7 @@ void iniciarSesion() {
   zoomMin[0] = -90;  zoomMax[0] = 90;   zoomLocked[0] = false;
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
   zoomDisparoActivo = false;
+  modoDiana = false;
   modoAlineacion = 0;
   mainTimeOffset = 0;
   for (int s = 0; s < 10; s++) compTimeOffset[s] = 0;
@@ -504,6 +511,7 @@ void cargarReproduccion(String ruta) {
   zoomMin[0] = -90;  zoomMax[0] = 90;   zoomLocked[0] = false;
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
   zoomDisparoActivo = false;
+  modoDiana = false;
   modoAlineacion = 0;
   mainTimeOffset = 0;
   for (int s = 0; s < 10; s++) compTimeOffset[s] = 0;
@@ -922,6 +930,21 @@ void dibujarGraficas() {
     text(lblAl, btnAlinearX + btnAlinearW / 2, btnAlinearY + btnAlinearH / 2);
   }
 
+  // ── Botón Diana ──────────────────────────────────────────
+  boolean hayDatosDiana = grafShots.size() > 0 || grafRoll.size() > 0;
+  btnDianaX = modoComparar ? (btnAlinearX - btnDianaW - 8) : (btnZoomX - btnDianaW - 8);
+  btnDianaY = btnZoomY;
+  boolean hoverDiana = mouseX >= btnDianaX && mouseX <= btnDianaX + btnDianaW &&
+                       mouseY >= btnDianaY && mouseY <= btnDianaY + btnDianaH;
+  fill(modoDiana ? color(200, 60, 60) : (hayDatosDiana ? (hoverDiana ? color(210, 90, 90) : color(140, 35, 35)) : color(55)));
+  noStroke(); rect(btnDianaX, btnDianaY, btnDianaW, btnDianaH, 4);
+  fill(hayDatosDiana ? color(255) : color(100));
+  textFont(fontUI); textSize(12); textAlign(CENTER, CENTER);
+  text(modoDiana ? "\u00d7 Cerrar" : "\u25ce Diana", btnDianaX + btnDianaW / 2, btnDianaY + btnDianaH / 2);
+
+  // Si modo diana activo, mostrar diana y salir
+  if (modoDiana) { dibujarDiana(); return; }
+
   // ── Dibujar gráfica Roll ─────────────────────────────────
   dibujarGrafica(gx0, GRAFICA_Y1 + 30, gw0, GRAFICA_H - 30,
                  "ROLL / Elevación (°)", grafRoll, COL_ROLL,
@@ -1198,6 +1221,180 @@ void dibujarTracaExtra(int gx, int gy, int gw, int gh,
   }
 }
 
+// ===================== DIANA =====================
+void dibujarDiana() {
+  int gx = LISTA_W + 10;
+  int gy = HEADER_H + 10;
+  int gw = width - gx - 10;
+  int gh = height - gy - 10;
+
+  fill(10); stroke(COL_BORDE); strokeWeight(1);
+  rect(gx, gy, gw, gh, 4);
+
+  int cx = gx + gw / 2;
+  int cy = gy + gh / 2;
+  int r  = min(gw - 120, gh - 120) / 2;
+
+  // Sin datos
+  if (grafShots.size() == 0 || min(grafRoll.size(), grafYaw.size()) == 0) {
+    fill(COL_TEXTDIM); textFont(fontUI); textSize(15); textAlign(CENTER, CENTER);
+    text("Sin datos de disparo.\nSelecciona una sesión con disparos en la lista.", cx, cy);
+    return;
+  }
+
+  float tShot = grafShots.get(grafShots.size() - 1)[0];
+  float tPre  = tShot - 0.300;
+  float tPost = tShot + 0.100;
+
+  // Posición en el momento del disparo (centro de la diana = desviación 0)
+  float rollShot = 0, yawShot = 0;
+  float bestD = Float.MAX_VALUE;
+  for (float[] p : grafRoll) { float d = abs(p[0] - tShot); if (d < bestD) { bestD = d; rollShot = p[1]; } }
+  bestD = Float.MAX_VALUE;
+  for (float[] p : grafYaw)  { float d = abs(p[0] - tShot); if (d < bestD) { bestD = d; yawShot  = p[1]; } }
+
+  // Ventana de puntos (grafRoll[i] y grafYaw[i] comparten timestamp)
+  int nPts = min(grafRoll.size(), grafYaw.size());
+  ArrayList<float[]> ventana = new ArrayList<float[]>();
+  float maxDev = 0.01;
+  for (int i = 0; i < nPts; i++) {
+    float t  = grafRoll.get(i)[0];
+    if (t < tPre || t > tPost) continue;
+    float dr = grafRoll.get(i)[1] - rollShot;
+    float dy = grafYaw.get(i)[1]  - yawShot;
+    ventana.add(new float[]{ t, dr, dy });
+    maxDev = max(maxDev, abs(dr), abs(dy));
+  }
+  maxDev = max(maxDev * 1.3, 0.02);
+
+  // ── Anillos de la diana ────────────────────────────────────────────
+  int nRings = 5;
+  color[] ringCols = {
+    color(180, 20, 20),
+    color(150, 22, 22),
+    color(30,  30, 52),
+    color(24,  24, 42),
+    color(18,  18, 32)
+  };
+  for (int i = nRings; i >= 1; i--) {
+    float ri = r * (float) i / nRings;
+    fill(ringCols[i - 1]); stroke(80); strokeWeight(1);
+    ellipse(cx, cy, ri * 2, ri * 2);
+    float devI = maxDev * i / nRings;
+    fill(140); textFont(fontMono); textSize(10); textAlign(LEFT, CENTER);
+    text(nf(devI, 1, 3) + "°", cx + ri + 4, cy);
+    fill(120); textFont(fontMono); textSize(10); textAlign(CENTER, CENTER);
+    text(str(nRings + 5 - i), cx, cy - ri + 8);
+  }
+
+  // Bullseye central
+  fill(255); noStroke(); ellipse(cx, cy, 5, 5);
+
+  // Cruces
+  stroke(80, 80, 80, 160); strokeWeight(1);
+  line(gx + 8, cy, gx + gw - 8, cy);
+  line(cx, gy + 8, cx, gy + gh - 8);
+
+  // ── Trayectoria ─────────────────────────────────────────────────────
+  if (ventana.size() >= 2) {
+
+    // Pre-disparo (azul): −300 ms hasta el disparo
+    stroke(80, 150, 255); strokeWeight(2.5); noFill();
+    beginShape();
+    for (float[] p : ventana) {
+      if (p[0] > tShot) break;
+      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
+      float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
+      vertex(sx, sy);
+    }
+    vertex(cx, cy);  // conectar con el centro (disparo)
+    endShape();
+
+    // Post-disparo (verde): disparo → +100 ms
+    stroke(80, 255, 130); strokeWeight(1.5); noFill();
+    boolean postStarted = false;
+    beginShape();
+    for (float[] p : ventana) {
+      if (p[0] <= tShot) continue;
+      if (!postStarted) { vertex(cx, cy); postStarted = true; }
+      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
+      float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
+      vertex(sx, sy);
+    }
+    endShape();
+
+    // Puntos individuales sobre la trayectoria
+    for (float[] p : ventana) {
+      if (abs(p[0] - tShot) < 0.003) continue;
+      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
+      float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
+      fill(p[0] < tShot ? color(80, 150, 255) : color(80, 255, 130)); noStroke();
+      ellipse(sx, sy, 4, 4);
+    }
+
+    // Flecha de aproximación al disparo (muestra la dirección de llegada)
+    float arrowX = cx, arrowY = cy;
+    for (float[] p : ventana) {
+      if (p[0] >= tShot) break;
+      arrowX = cx + map(p[2], -maxDev, maxDev, -r, r);
+      arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
+    }
+    float adx = cx - arrowX, ady = cy - arrowY;
+    float alen = sqrt(adx * adx + ady * ady);
+    if (alen > 6) {
+      float nx = adx / alen, ny = ady / alen;
+      float headLen = min(14, alen * 0.5);
+      float hx2 = cx - nx * headLen, hy2 = cy - ny * headLen;
+      fill(80, 150, 255); noStroke();
+      triangle(cx, cy, hx2 + (-ny) * 4, hy2 + nx * 4, hx2 - (-ny) * 4, hy2 - nx * 4);
+    }
+  }
+
+  // Marca del disparo (centro)
+  fill(COL_SHOT); stroke(255, 180, 180); strokeWeight(1.5);
+  ellipse(cx, cy, 14, 14);
+  fill(255); noStroke(); ellipse(cx, cy, 4, 4);
+
+  // ── Título e información ───────────────────────────────────────────
+  fill(COL_TEXT); textFont(fontUI); textSize(14); textAlign(CENTER, TOP);
+  text("DIANA  —  Trayectoria del disparo  ( \u2212300 ms \u2192 \u25cf \u2192 +100 ms )", cx, gy + 8);
+
+  // Etiquetas de ejes
+  pushMatrix();
+  translate(gx + 22, cy);
+  rotate(-HALF_PI);
+  fill(COL_ROLL); textFont(fontUI); textSize(11); textAlign(CENTER, CENTER);
+  text("ROLL / Elevaci\u00f3n", 0, 0);
+  popMatrix();
+
+  fill(COL_YAW); textFont(fontUI); textSize(11); textAlign(CENTER, CENTER);
+  text("YAW / Rumbo", cx, gy + gh - 14);
+
+  fill(COL_TEXTDIM); textFont(fontMono); textSize(10); textAlign(CENTER, CENTER);
+  text("\u25b2 +Roll", cx, cy - r - 16);
+  text("\u25bc \u2212Roll", cx, cy + r + 16);
+  text("\u25c4 \u2212Yaw", gx + 44, cy);
+  text("+Yaw \u25ba", gx + gw - 44, cy);
+
+  // Leyenda
+  int legX = gx + 12;
+  int legDY = gy + 30;
+  noStroke(); fill(color(80, 150, 255)); rect(legX, legDY - 1, 20, 3, 1);
+  fill(color(80, 150, 255)); textFont(fontUI); textSize(12); textAlign(LEFT, CENTER);
+  text("Pre-disparo (300 ms)", legX + 26, legDY + 1);
+  legDY += 18;
+  noStroke(); fill(color(80, 255, 130)); rect(legX, legDY - 1, 20, 3, 1);
+  fill(color(80, 255, 130)); textAlign(LEFT, CENTER);
+  text("Post-disparo (100 ms)", legX + 26, legDY + 1);
+  legDY += 18;
+  fill(COL_SHOT); noStroke(); ellipse(legX + 10, legDY, 10, 10);
+  fill(COL_SHOT); textAlign(LEFT, CENTER);
+  text("Disparo  Yaw=" + nf(yawShot, 1, 3) + "\u00b0  Roll=" + nf(rollShot, 1, 3) + "\u00b0", legX + 26, legDY);
+  legDY += 18;
+  fill(COL_TEXTDIM); textFont(fontMono); textSize(11); textAlign(LEFT, CENTER);
+  text("Escala: \u00b1" + nf(maxDev, 1, 3) + "\u00b0  |  " + ventana.size() + " muestras  |  t=" + nf(tShot, 1, 3) + "s", legX, legDY);
+}
+
 // ===================== INPUT VALOR DE IMPACTO =====================
 void dibujarInputValor() {
   // Overlay semitransparente
@@ -1271,7 +1468,9 @@ void dibujarInfoSesion() {
   int ix = COMBO_X + COMBO_W + 10;
   int iy = 8;
   int ih = 20;
-  int iw = (modoComparar ? btnAlinearX : btnZoomX) - ix - 8;  // hasta el primer botón activo
+  // El cuadro llega hasta el botón más a la izquierda: Diana (siempre visible), Alinear (solo comparar)
+  int primerBoton = modoComparar ? min(btnDianaX, btnAlinearX) : btnDianaX;
+  int iw = primerBoton - ix - 8;
 
   fill(35); stroke(COL_BORDE); strokeWeight(1);
   rect(ix, iy, iw, ih, 4);
@@ -1332,6 +1531,13 @@ void mousePressed() {
       }
     }
     comboAbierto = false;
+    return;
+  }
+
+  // Botón diana
+  if (mouseX >= btnDianaX && mouseX <= btnDianaX + btnDianaW &&
+      mouseY >= btnDianaY && mouseY <= btnDianaY + btnDianaH) {
+    modoDiana = !modoDiana;
     return;
   }
 
@@ -1528,35 +1734,15 @@ void mouseWheel(MouseEvent e) {
     tZoomMin = max(tZoomMin, 0);
   } else {
     // Zoom en Y: aplica el mismo factor a ambas gráficas
-    // El centro se calcula como la mediana de los valores visibles en la ventana X actual
     float factor = e.getCount() > 0 ? 1.15 : 0.87;
 
-    float tMax = 1.0;
-    if (grafRoll.size() > 0) tMax = grafRoll.get(grafRoll.size()-1)[0];
-    float tVisMin = tZoomMin;
-    float tVisMax = (tZoomMax < 0) ? tMax : tZoomMax;
-
     for (int gi = 0; gi < 2; gi++) {
-      List<float[]> curva = (gi == 0) ? grafRoll : grafYaw;
-
-      // Recoger todos los valores dentro de la ventana X visible
-      ArrayList<Float> vals = new ArrayList<Float>();
-      for (float[] p : curva) {
-        if (p[0] >= tVisMin && p[0] <= tVisMax) vals.add(p[1]);
-      }
-
-      float centro;
-      if (vals.size() > 0) {
-        // Mediana: promedio entre min y max de los valores visibles (= centro del rango real)
-        float vLo = vals.get(0), vHi = vals.get(0);
-        for (float v : vals) { if (v < vLo) vLo = v; if (v > vHi) vHi = v; }
-        centro = (vLo + vHi) / 2.0;
-      } else {
-        // Sin datos visibles: mantener centro actual
-        centro = (zoomMin[gi] + zoomMax[gi]) / 2.0;
-      }
-
-      float mitad = (zoomMax[gi] - zoomMin[gi]) / 2.0;
+      // Zoom centrado en el punto medio del rango visible actual.
+      // Usar el midrange de los datos causaba deriva: si el disparo coincide con
+      // el extremo del rango de datos (p.ej. mínimo de Yaw), el centro calculado
+      // quedaba desplazado y cada paso de zoom empujaba ese extremo hacia el margen.
+      float centro = (zoomMin[gi] + zoomMax[gi]) / 2.0;
+      float mitad  = (zoomMax[gi] - zoomMin[gi]) / 2.0;
       mitad = max(mitad * factor, 0.05);
       zoomMin[gi] = centro - mitad;
       zoomMax[gi] = centro + mitad;
