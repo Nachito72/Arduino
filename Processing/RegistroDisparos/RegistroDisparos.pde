@@ -51,6 +51,9 @@ float ROLL_OFFSET = -85.0;  // ← ángulo raw que corresponde a "pistola plana"
 // Ventana previa al disparo que se resalta en azul en las gráficas
 float PRESHOT_SEG = 0.200;  // ← 200 ms por defecto, ajustar a mano
 
+// Ventana de suavizado de curvas en pantalla (muestras; 1 = sin suavizado)
+final int SMOOTH_N = 7;
+
 void verificarRuta() {
   println("📁 Guardando datos en: " + DIR_BASE);
 }
@@ -1013,6 +1016,21 @@ void dibujarGraficas() {
   }
 }
 
+// Media móvil sobre Y para suavizar la curva en pantalla (no modifica los datos originales)
+ArrayList<float[]> suavizar(ArrayList<float[]> pts, int ventana) {
+  if (ventana <= 1 || pts.size() < 2) return pts;
+  ArrayList<float[]> out = new ArrayList<float[]>();
+  int half = ventana / 2;
+  for (int i = 0; i < pts.size(); i++) {
+    float sy = 0; int cnt = 0;
+    for (int j = max(0, i - half); j <= min(pts.size()-1, i + half); j++) {
+      sy += pts.get(j)[1]; cnt++;
+    }
+    out.add(new float[]{ pts.get(i)[0], sy / cnt });
+  }
+  return out;
+}
+
 void dibujarGrafica(int gx, int gy, int gw, int gh,
                     String titulo, List<float[]> datos,
                     color c, float vMin, float vMax,
@@ -1109,15 +1127,22 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
 
   // Curva (solo puntos dentro de la ventana visible) — se dibuja encima del fondo azul
   if (datos.size() < 2) return;
-  stroke(c); strokeWeight(1.5); noFill();
-  beginShape();
+  ArrayList<float[]> ptsVis = new ArrayList<float[]>();
   for (float[] punto : datos) {
     if (punto[0] < tVisMin - pasoT || punto[0] > tVisMax + pasoT) continue;
     float xP = ax + map(punto[0], tVisMin, tVisMax, 0, aw);
     float yP = ay + ah - map(constrain(punto[1], vMin, vMax), vMin, vMax, 0, ah);
-    vertex(xP, yP);
+    ptsVis.add(new float[]{ xP, yP });
   }
-  endShape();
+  ptsVis = suavizar(ptsVis, SMOOTH_N);
+  if (ptsVis.size() >= 2) {
+    stroke(c); strokeWeight(1.5); noFill();
+    beginShape();
+    curveVertex(ptsVis.get(0)[0], ptsVis.get(0)[1]);
+    for (float[] p : ptsVis) curveVertex(p[0], p[1]);
+    curveVertex(ptsVis.get(ptsVis.size()-1)[0], ptsVis.get(ptsVis.size()-1)[1]);
+    endShape();
+  }
 
   // Línea vertical roja + triángulo encima de la curva
   if (showShots) {
@@ -1204,16 +1229,23 @@ void dibujarTracaExtra(int gx, int gy, int gw, int gh,
   }
 
   // Curva
-  stroke(c); strokeWeight(1.5); noFill();
-  beginShape();
+  ArrayList<float[]> ptsExtra = new ArrayList<float[]>();
   for (float[] p : datos) {
     float t = p[0] - tOffset;
     if (t < tVisMin - 1 || t > tVisMax + 1) continue;
     float xP = ax + map(t, tVisMin, tVisMax, 0, aw);
     float yP = ay + ah - map(constrain(p[1], vMin, vMax), vMin, vMax, 0, ah);
-    vertex(xP, yP);
+    ptsExtra.add(new float[]{ xP, yP });
   }
-  endShape();
+  ptsExtra = suavizar(ptsExtra, SMOOTH_N);
+  if (ptsExtra.size() >= 2) {
+    stroke(c); strokeWeight(1.5); noFill();
+    beginShape();
+    curveVertex(ptsExtra.get(0)[0], ptsExtra.get(0)[1]);
+    for (float[] p : ptsExtra) curveVertex(p[0], p[1]);
+    curveVertex(ptsExtra.get(ptsExtra.size()-1)[0], ptsExtra.get(ptsExtra.size()-1)[1]);
+    endShape();
+  }
 
   // Marcadores de disparo
   for (float[] sh : shots) {
@@ -1316,34 +1348,45 @@ void dibujarDiana() {
   if (ventana.size() >= 2) {
 
     // Pre-disparo (azul): −300 ms hasta el disparo
-    stroke(80, 150, 255); strokeWeight(2.5); noFill();
-    beginShape();
+    ArrayList<float[]> ptsPre = new ArrayList<float[]>();
     for (float[] p : ventana) {
       if (p[0] > tShot) break;
-      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
-      float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
-      vertex(sx, sy);
+      ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
+                              cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
-    vertex(cx, cy);  // conectar con el centro (disparo)
-    endShape();
+    ptsPre.add(new float[]{ cx, cy });  // conectar con el centro (disparo)
+    ptsPre = suavizar(ptsPre, SMOOTH_N);
+    if (ptsPre.size() >= 2) {
+      stroke(80, 150, 255); strokeWeight(2.5); noFill();
+      beginShape();
+      curveVertex(ptsPre.get(0)[0], ptsPre.get(0)[1]);
+      for (float[] p : ptsPre) curveVertex(p[0], p[1]);
+      curveVertex(ptsPre.get(ptsPre.size()-1)[0], ptsPre.get(ptsPre.size()-1)[1]);
+      endShape();
+    }
 
     // Post-disparo (verde): disparo → +100 ms
-    stroke(80, 255, 130); strokeWeight(1.5); noFill();
-    boolean postStarted = false;
-    beginShape();
+    ArrayList<float[]> ptsPost = new ArrayList<float[]>();
+    ptsPost.add(new float[]{ cx, cy });
     for (float[] p : ventana) {
       if (p[0] <= tShot) continue;
-      if (!postStarted) { vertex(cx, cy); postStarted = true; }
-      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
-      float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
-      vertex(sx, sy);
+      ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
+                               cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
-    endShape();
+    ptsPost = suavizar(ptsPost, SMOOTH_N);
+    if (ptsPost.size() >= 2) {
+      stroke(80, 255, 130); strokeWeight(1.5); noFill();
+      beginShape();
+      curveVertex(ptsPost.get(0)[0], ptsPost.get(0)[1]);
+      for (float[] p : ptsPost) curveVertex(p[0], p[1]);
+      curveVertex(ptsPost.get(ptsPost.size()-1)[0], ptsPost.get(ptsPost.size()-1)[1]);
+      endShape();
+    }
 
     // Puntos individuales sobre la trayectoria
     for (float[] p : ventana) {
       if (abs(p[0] - tShot) < 0.003) continue;
-      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
+      float sx = cx + map(p[2], -maxDev, maxDev, r, -r);
       float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
       fill(p[0] < tShot ? color(80, 150, 255) : color(80, 255, 130)); noStroke();
       ellipse(sx, sy, 4, 4);
@@ -1353,7 +1396,7 @@ void dibujarDiana() {
     float arrowX = cx, arrowY = cy;
     for (float[] p : ventana) {
       if (p[0] >= tShot) break;
-      arrowX = cx + map(p[2], -maxDev, maxDev, -r, r);
+      arrowX = cx + map(p[2], -maxDev, maxDev, r, -r);
       arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
     }
     float adx = cx - arrowX, ady = cy - arrowY;
@@ -1390,8 +1433,8 @@ void dibujarDiana() {
   fill(COL_TEXTDIM); textFont(fontMono); textSize(10); textAlign(CENTER, CENTER);
   text("\u25b2 +Roll", cx, cy - r - 16);
   text("\u25bc \u2212Roll", cx, cy + r + 16);
-  text("\u25c4 \u2212Yaw", gx + 44, cy);
-  text("+Yaw \u25ba", gx + gw - 44, cy);
+  text("\u25c4 +Yaw", gx + 44, cy);
+  text("\u2212Yaw \u25ba", gx + gw - 44, cy);
 
   // Leyenda
   int legX = gx + 12;
