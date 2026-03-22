@@ -58,7 +58,7 @@ const float PITCH_MAX_OFF  =   13.0f;
 
 // LEVEL_ON_COUNT  : lecturas consecutivas en rango para ARMAR   (5 × 10ms = 50ms)
 // LEVEL_OFF_COUNT : lecturas consecutivas fuera  para DESARMAR  (8 × 10ms = 80ms)
-const uint8_t LEVEL_ON_COUNT  = 5;
+const uint8_t LEVEL_ON_COUNT  = 7;
 const uint8_t LEVEL_OFF_COUNT = 8;
 
 bool armed = false;
