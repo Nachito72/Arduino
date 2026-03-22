@@ -16,8 +16,8 @@ import javax.sound.sampled.*;
 // Pitido cuando el eje de elevacion (roll corregido) se mantiene en +-0.5
 // durante al menos ESTAB_N muestras seguidas (~500 ms a 100 Hz)
 final int   ESTAB_N               = 50;   // ventana deslizante (num muestras ~500ms a 100Hz)
-final float ESTAB_RANGO_ROLL      = 0.090; // rango maximo en grados (elevacion) para considerar estable
-final float ESTAB_RANGO_YAW       = 0.090; // rango maximo en grados (deriva)     para considerar estable
+final float ESTAB_RANGO_ROLL      = 0.050; // rango maximo en grados (elevacion) para considerar estable
+final float ESTAB_RANGO_YAW       = 0.050; // rango maximo en grados (deriva)     para considerar estable
 final int   PITIDO_INTERVALO      = 600;  // ms entre pitidos mientras hay estabilidad
 float[]     estabBuf         = new float[ESTAB_N];  // buffer roll
 float[]     estabYawBuf      = new float[ESTAB_N];  // buffer yaw
@@ -312,10 +312,11 @@ void serialEvent(Serial p) {
       grafYaw.add(new float[]{ tSeg, (float)yawRel });
 
       // ── Estabilidad: buffer circular de los últimos 500 ms ──────────
+      boolean yawFalseado = !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX);
       float rollVal = (float)(roll - ROLL_OFFSET);
       float yawVal  = (float)yawRel;
-      estabBuf[estabBufIdx]    = rollVal;
-      estabYawBuf[estabBufIdx] = yawVal;
+      estabBuf[estabBufIdx] = rollVal;
+      if (!yawFalseado) estabYawBuf[estabBufIdx] = yawVal;
       estabBufIdx = (estabBufIdx + 1) % ESTAB_N;
       if (estabBufCount < ESTAB_N) estabBufCount++;
 
@@ -327,7 +328,7 @@ void serialEvent(Serial p) {
           if (estabYawBuf[j] < yMin) yMin = estabYawBuf[j]; if (estabYawBuf[j] > yMax) yMax = estabYawBuf[j];
         }
         estableRoll = (rMax - rMin) <= ESTAB_RANGO_ROLL;
-        estableYaw  = (yMax - yMin) <= ESTAB_RANGO_YAW;
+        estableYaw  = !yawFalseado && (yMax - yMin) <= ESTAB_RANGO_YAW;
       } else {
         estableRoll = false;
         estableYaw  = false;
