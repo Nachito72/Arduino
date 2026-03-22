@@ -15,14 +15,19 @@ import javax.sound.sampled.*;
 // ===================== ESTABILIDAD DE ELEVACION =====================
 // Pitido cuando el eje de elevacion (roll corregido) se mantiene en +-0.5
 // durante al menos ESTAB_N muestras seguidas (~500 ms a 100 Hz)
-final int   ESTAB_N          = 50;   // ventana deslizante (num muestras)
-final float ESTAB_RANGO      = 1.0;  // rango total maximo en grados (+-0.5)
-final int   PITIDO_INTERVALO = 600;  // ms entre pitidos mientras hay estabilidad
-float[]     estabBuf         = new float[ESTAB_N];
+final int   ESTAB_N               = 50;   // ventana deslizante (num muestras ~500ms a 100Hz)
+final float ESTAB_RANGO_ROLL      = 0.090; // rango maximo en grados (elevacion) para considerar estable
+final float ESTAB_RANGO_YAW       = 0.090; // rango maximo en grados (deriva)     para considerar estable
+final int   PITIDO_INTERVALO      = 600;  // ms entre pitidos mientras hay estabilidad
+float[]     estabBuf         = new float[ESTAB_N];  // buffer roll
+float[]     estabYawBuf      = new float[ESTAB_N];  // buffer yaw
 int         estabBufIdx      = 0;
 int         estabBufCount    = 0;
-boolean     estable          = false;
-long        ultimoPitidoMs   = 0;
+boolean     estableRoll      = false;
+boolean     estableYaw       = false;
+long        ultimoPitidoRollMs  = 0;
+long        ultimoPitidoYawMs   = 0;
+long        ultimoPitidoAmbosMs = 0;
 
 // ===================== CONFIGURACION =====================
 // Windows:
@@ -305,6 +310,47 @@ void serialEvent(Serial p) {
       }
       grafRoll.add(new float[]{ tSeg, (float)(roll - ROLL_OFFSET) });
       grafYaw.add(new float[]{ tSeg, (float)yawRel });
+
+      // ── Estabilidad: buffer circular de los últimos 500 ms ──────────
+      float rollVal = (float)(roll - ROLL_OFFSET);
+      float yawVal  = (float)yawRel;
+      estabBuf[estabBufIdx]    = rollVal;
+      estabYawBuf[estabBufIdx] = yawVal;
+      estabBufIdx = (estabBufIdx + 1) % ESTAB_N;
+      if (estabBufCount < ESTAB_N) estabBufCount++;
+
+      if (estabBufCount >= ESTAB_N) {
+        float rMin = estabBuf[0], rMax = estabBuf[0];
+        float yMin = estabYawBuf[0], yMax = estabYawBuf[0];
+        for (int j = 1; j < ESTAB_N; j++) {
+          if (estabBuf[j]    < rMin) rMin = estabBuf[j];    if (estabBuf[j]    > rMax) rMax = estabBuf[j];
+          if (estabYawBuf[j] < yMin) yMin = estabYawBuf[j]; if (estabYawBuf[j] > yMax) yMax = estabYawBuf[j];
+        }
+        estableRoll = (rMax - rMin) <= ESTAB_RANGO_ROLL;
+        estableYaw  = (yMax - yMin) <= ESTAB_RANGO_YAW;
+      } else {
+        estableRoll = false;
+        estableYaw  = false;
+      }
+
+      long ahoraMs = millis();
+      boolean ambos = estableRoll && estableYaw;
+      if (ambos) {
+        if (ahoraMs - ultimoPitidoAmbosMs >= PITIDO_INTERVALO) {
+          ultimoPitidoAmbosMs = ahoraMs;
+          _beepType = 3; thread("_runBeep");
+        }
+      } else if (estableRoll) {
+        if (ahoraMs - ultimoPitidoRollMs >= PITIDO_INTERVALO) {
+          ultimoPitidoRollMs = ahoraMs;
+          _beepType = 1; thread("_runBeep");
+        }
+      } else if (estableYaw) {
+        if (ahoraMs - ultimoPitidoYawMs >= PITIDO_INTERVALO) {
+          ultimoPitidoYawMs = ahoraMs;
+          _beepType = 2; thread("_runBeep");
+        }
+      }
     } catch (Exception e) {}
   }
 }
@@ -319,10 +365,13 @@ void iniciarSesion() {
   grafYaw.clear();
   grafShots.clear();
   yawRef = Double.NaN;
-  estabBufIdx   = 0;
-  estabBufCount = 0;
-  estable       = false;
-  ultimoPitidoMs = 0;
+  estabBufIdx          = 0;
+  estabBufCount        = 0;
+  estableRoll          = false;
+  estableYaw           = false;
+  ultimoPitidoRollMs   = 0;
+  ultimoPitidoYawMs    = 0;
+  ultimoPitidoAmbosMs  = 0;
   tZoomMin = 0;    tZoomMax = -1;
   zoomMin[0] = -90;  zoomMax[0] = 90;   zoomLocked[0] = false;
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
@@ -668,6 +717,27 @@ void guardarValorImpacto(int idx, String valor) {
   println("💾 Valor guardado: '" + valor + "' → " + ruta);
 }
 
+// ===================== SONIDO =====================
+float _beepFreq = 880;
+int   _beepDur  = 200;
+float _beepVol  = 0.6;
+int   _beepType = 0;   // 0=test manual  1=roll estable  2=yaw estable  3=ambos
+
+void pitarBeep(float freqHz, int durMs, float vol) {
+  _beepFreq = freqHz;
+  _beepDur  = durMs;
+  _beepVol  = vol;
+  _beepType = 0;
+  thread("_runBeep");
+}
+
+void _runBeep() {
+  if      (_beepType == 1) BeepHelper.playBeep(660,  150, 0.5);              // Roll estable
+  else if (_beepType == 2) BeepHelper.playBeep(880,  150, 0.5);              // Yaw estable
+  else if (_beepType == 3) BeepHelper.playSequence(880, 100, 1100, 120, 0.6); // Ambos estables
+  else                     BeepHelper.playBeep(_beepFreq, _beepDur, _beepVol); // Test manual
+}
+
 // ===================== DRAW =====================
 void draw() {
   background(COL_BG);
@@ -695,6 +765,17 @@ void dibujarHeader() {
   // Puerto
   fill(COL_TEXTDIM); textSize(13); textAlign(RIGHT, CENTER);
   text("Puerto: " + PUERTO + "  |  Sesiones: " + listaEntradas.size(), width - 10, HEADER_H / 2);
+
+  // Botón de prueba de sonido
+  int btnSndW = 100, btnSndH = 20;
+  int btnSndX = width - btnSndW - 10;
+  int btnSndY = HEADER_H - btnSndH - 6;
+  boolean hoverSnd = mouseX >= btnSndX && mouseX <= btnSndX + btnSndW &&
+                     mouseY >= btnSndY && mouseY <= btnSndY + btnSndH;
+  fill(hoverSnd ? color(60, 180, 80) : color(35, 100, 50)); noStroke();
+  rect(btnSndX, btnSndY, btnSndW, btnSndH, 4);
+  fill(200); textFont(fontUI); textSize(12); textAlign(CENTER, CENTER);
+  text("♪ Test sonido", btnSndX + btnSndW / 2, btnSndY + btnSndH / 2);
 }
 
 // ===================== COMBO DÍA =====================
@@ -1615,6 +1696,16 @@ void mousePressed() {
   if (mouseX >= btnDianaX && mouseX <= btnDianaX + btnDianaW &&
       mouseY >= btnDianaY && mouseY <= btnDianaY + btnDianaH) {
     modoDiana = !modoDiana;
+    return;
+  }
+
+  // Botón Test sonido (header, esquina inferior derecha del header)
+  int btnSndW = 100, btnSndH = 20;
+  int btnSndX = width - btnSndW - 10;
+  int btnSndY = HEADER_H - btnSndH - 6;
+  if (mouseX >= btnSndX && mouseX <= btnSndX + btnSndW &&
+      mouseY >= btnSndY && mouseY <= btnSndY + btnSndH) {
+    pitarBeep(880, 200, 0.6);
     return;
   }
 
