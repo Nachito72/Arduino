@@ -56,6 +56,10 @@ float ROLL_OFFSET = -85.0;  // ← ángulo raw que corresponde a "pistola plana"
 // Ventana previa al disparo que se resalta en azul en las gráficas
 float PRESHOT_SEG = 0.200;  // ← 200 ms por defecto, ajustar a mano
 
+// Ventana de la diana: tiempo antes y después del disparo que se dibuja como rastro
+float DIANA_PRE_SEG  = 0.200;  // ← 300 ms antes del disparo (rastro azul)
+float DIANA_POST_SEG = 0.100;  // ← 100 ms después del disparo (rastro verde)
+
 // Ventana de suavizado de curvas en pantalla (muestras; 1 = sin suavizado)
 final int SMOOTH_N = 7;
 
@@ -404,6 +408,16 @@ void finalizarSesion() {
   grabando = false;
 
   float durSeg = (millis() - tInicioSesion) / 1000.0;
+
+  // Capturas de menos de 5 s se descartan como erróneas
+  if (durSeg < 5.0) {
+    println("⚠ Sesión descartada (duración " + nf(durSeg, 1, 2) + "s < 5s)");
+    bufferSesion.clear();
+    grafRoll.clear();
+    grafYaw.clear();
+    grafShots.clear();
+    return;
+  }
 
   // Nombre de fichero
   SimpleDateFormat sdfHoraF = new SimpleDateFormat("HHmmss");
@@ -1374,8 +1388,8 @@ void dibujarDiana() {
   }
 
   float tShot = grafShots.get(grafShots.size() - 1)[0];
-  float tPre  = tShot - 0.300;
-  float tPost = tShot + 0.100;
+  float tPre  = tShot - DIANA_PRE_SEG;
+  float tPost = tShot + DIANA_POST_SEG;
 
   // Referencia = primer punto de la ventana (centro de la diana = posición inicial de apuntado)
   int nPts = min(grafRoll.size(), grafYaw.size());
