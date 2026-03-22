@@ -531,7 +531,7 @@ void cargarReproduccion(String ruta) {
   zoomMin[0] = -90;  zoomMax[0] = 90;   zoomLocked[0] = false;
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
   zoomDisparoActivo = false;
-  modoDiana = false;
+  // modoDiana se mantiene para que el toggle persista entre selecciones
   modoAlineacion = 0;
   mainTimeOffset = 0;
   for (int s = 0; s < 10; s++) compTimeOffset[s] = 0;
@@ -1295,26 +1295,38 @@ void dibujarDiana() {
   float tPre  = tShot - 0.300;
   float tPost = tShot + 0.100;
 
-  // Posición en el momento del disparo (centro de la diana = desviación 0)
-  float rollShot = 0, yawShot = 0;
+  // Referencia = primer punto de la ventana (centro de la diana = posición inicial de apuntado)
+  int nPts = min(grafRoll.size(), grafYaw.size());
+  float rollRef = 0, yawRef_d = 0;
+  for (int i = 0; i < nPts; i++) {
+    if (grafRoll.get(i)[0] >= tPre) { rollRef = grafRoll.get(i)[1]; yawRef_d = grafYaw.get(i)[1]; break; }
+  }
+
+  // Posición del disparo (para calcular dónde cae el tiro respecto al centro)
+  float rollShot = rollRef, yawShot = yawRef_d;
   float bestD = Float.MAX_VALUE;
   for (float[] p : grafRoll) { float d = abs(p[0] - tShot); if (d < bestD) { bestD = d; rollShot = p[1]; } }
   bestD = Float.MAX_VALUE;
   for (float[] p : grafYaw)  { float d = abs(p[0] - tShot); if (d < bestD) { bestD = d; yawShot  = p[1]; } }
 
-  // Ventana de puntos (grafRoll[i] y grafYaw[i] comparten timestamp)
-  int nPts = min(grafRoll.size(), grafYaw.size());
+  // Ventana de puntos: desviaciones respecto al primer punto (referencia = centro)
   ArrayList<float[]> ventana = new ArrayList<float[]>();
   float maxDev = 0.01;
   for (int i = 0; i < nPts; i++) {
     float t  = grafRoll.get(i)[0];
     if (t < tPre || t > tPost) continue;
-    float dr = grafRoll.get(i)[1] - rollShot;
-    float dy = grafYaw.get(i)[1]  - yawShot;
+    float dr = grafRoll.get(i)[1] - rollRef;
+    float dy = grafYaw.get(i)[1]  - yawRef_d;
     ventana.add(new float[]{ t, dr, dy });
     maxDev = max(maxDev, abs(dr), abs(dy));
   }
   maxDev = max(maxDev * 1.3, 0.02);
+
+  // Posición del disparo en pantalla (puede no coincidir con el centro)
+  float drShot = rollShot - rollRef;
+  float dyShot = yawShot  - yawRef_d;
+  float sxShot = cx + map(dyShot, -maxDev, maxDev, r, -r);
+  float syShot = cy - map(drShot, -maxDev, maxDev, -r, r);
 
   // ── Anillos de la diana ────────────────────────────────────────────
   int nRings = 5;
@@ -1354,7 +1366,7 @@ void dibujarDiana() {
       ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                               cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
-    ptsPre.add(new float[]{ cx, cy });  // conectar con el centro (disparo)
+    ptsPre.add(new float[]{ sxShot, syShot });  // conectar con la posición real del disparo
     ptsPre = suavizar(ptsPre, SMOOTH_N);
     if (ptsPre.size() >= 2) {
       stroke(80, 150, 255); strokeWeight(2.5); noFill();
@@ -1367,7 +1379,7 @@ void dibujarDiana() {
 
     // Post-disparo (verde): disparo → +100 ms
     ArrayList<float[]> ptsPost = new ArrayList<float[]>();
-    ptsPost.add(new float[]{ cx, cy });
+    ptsPost.add(new float[]{ sxShot, syShot });
     for (float[] p : ventana) {
       if (p[0] <= tShot) continue;
       ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
@@ -1399,21 +1411,26 @@ void dibujarDiana() {
       arrowX = cx + map(p[2], -maxDev, maxDev, r, -r);
       arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
     }
-    float adx = cx - arrowX, ady = cy - arrowY;
+    float adx = sxShot - arrowX, ady = syShot - arrowY;
     float alen = sqrt(adx * adx + ady * ady);
     if (alen > 6) {
       float nx = adx / alen, ny = ady / alen;
       float headLen = min(14, alen * 0.5);
-      float hx2 = cx - nx * headLen, hy2 = cy - ny * headLen;
+      float hx2 = sxShot - nx * headLen, hy2 = syShot - ny * headLen;
       fill(80, 150, 255); noStroke();
-      triangle(cx, cy, hx2 + (-ny) * 4, hy2 + nx * 4, hx2 - (-ny) * 4, hy2 - nx * 4);
+      triangle(sxShot, syShot, hx2 + (-ny) * 4, hy2 + nx * 4, hx2 - (-ny) * 4, hy2 - nx * 4);
     }
   }
 
-  // Marca del disparo (centro)
-  fill(COL_SHOT); stroke(255, 180, 180); strokeWeight(1.5);
-  ellipse(cx, cy, 14, 14);
+  // Bullseye de inicio (centro = posición de apuntado inicial)
+  fill(255, 255, 255, 180); stroke(200); strokeWeight(1);
+  ellipse(cx, cy, 10, 10);
   fill(255); noStroke(); ellipse(cx, cy, 4, 4);
+
+  // Marca del disparo (donde cae el tiro)
+  fill(COL_SHOT); stroke(255, 180, 180); strokeWeight(1.5);
+  ellipse(sxShot, syShot, 14, 14);
+  fill(255); noStroke(); ellipse(sxShot, syShot, 4, 4);
 
   // ── Título e información ───────────────────────────────────────────
   fill(COL_TEXT); textFont(fontUI); textSize(14); textAlign(CENTER, TOP);
@@ -1449,7 +1466,7 @@ void dibujarDiana() {
   legDY += 18;
   fill(COL_SHOT); noStroke(); ellipse(legX + 10, legDY, 10, 10);
   fill(COL_SHOT); textAlign(LEFT, CENTER);
-  text("Disparo  Yaw=" + nf(yawShot, 1, 3) + "\u00b0  Roll=" + nf(rollShot, 1, 3) + "\u00b0", legX + 26, legDY);
+  text("Disparo  \u0394Yaw=" + nf(dyShot, 1, 3) + "\u00b0  \u0394Roll=" + nf(drShot, 1, 3) + "\u00b0", legX + 26, legDY);
   legDY += 18;
   fill(COL_TEXTDIM); textFont(fontMono); textSize(11); textAlign(LEFT, CENTER);
   text("Escala: \u00b1" + nf(maxDev, 1, 3) + "\u00b0  |  " + ventana.size() + " muestras  |  t=" + nf(tShot, 1, 3) + "s", legX, legDY);
