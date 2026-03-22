@@ -19,7 +19,6 @@
 // ================================================================
 
 #include <Wire.h>
-#include <EEPROM.h>
 #include <RPC.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
@@ -36,11 +35,9 @@ uint32_t ledNextToggleMs = 0;
 bool     ledState        = false;
 
 // ===================== IMU =====================
-Adafruit_BNO055 bno = Adafruit_BNO055();
+Adafruit_BNO055 bno = Adafruit_BNO055();  // 0x28 si ADR=GND, 0x29 si ADR=VCC
 
-// Dirección EEPROM para offsets de calibración del BNO055
-const int  EEPROM_ADDR  = 0;
-const byte EEPROM_FIRMA = 0xB7;
+// Giga R1 (Mbed OS) no tiene EEPROM — calibración automática en cada arranque
 
 // ===================== DISPAROS =====================
 // El M4 detecta el disparo y llama a shotDetected() vía RPC.
@@ -84,17 +81,10 @@ int onShotDetected() {
 }
 
 // ================================================================
-// EEPROM: cargar offsets de calibración del BNO055
+// Sin EEPROM en Giga R1 (Mbed OS): el BNO055 se autocalibrará en uso
 // ================================================================
 bool cargarOffsetsBNO() {
-  byte firma;
-  EEPROM.get(EEPROM_ADDR, firma);
-  if (firma != EEPROM_FIRMA) return false;
-
-  adafruit_bno055_offsets_t offsets;
-  EEPROM.get(EEPROM_ADDR + 1, offsets);
-  bno.setSensorOffsets(offsets);
-  return true;
+  return false;  // No hay EEPROM en la plataforma Mbed/STM32H747
 }
 
 // ================================================================
@@ -153,7 +143,34 @@ void setup() {
   RPC.begin();
   RPC.bind("shotDetected", onShotDetected);
 
+  // --- Escáner I2C diagnóstico ---
+  // Busca dispositivos en Wire (pines 20/21) y Wire1 a 100 kHz.
+  // Imprime cada dirección que responda. Quitar este bloque tras diagnosticar.
+  Wire.begin();
+  Wire.setClock(100000);
+  Wire1.begin();
+  Wire1.setClock(100000);
+  delay(300); // dar tiempo al BNO055 a arrancar
+
+  Serial.println("--- Escaner I2C ---");
+  bool encontrado = false;
+  for (uint8_t bus = 0; bus < 2; bus++) {
+    TwoWire &w = (bus == 0) ? Wire : Wire1;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+      w.beginTransmission(addr);
+      uint8_t err = w.endTransmission();
+      if (err == 0) {
+        Serial.print("  Dispositivo en Wire"); Serial.print(bus);
+        Serial.print(" direccion 0x"); Serial.println(addr, HEX);
+        encontrado = true;
+      }
+    }
+  }
+  if (!encontrado) Serial.println("  Ningun dispositivo I2C encontrado.");
+  Serial.println("--- Fin escaner ---");
+
   // --- BNO055 ---
+  Wire.setClock(100000);
   if (!bno.begin()) {
     Serial.println("ERROR: BNO055 no encontrado");
     while (1) {}

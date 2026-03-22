@@ -1,4 +1,4 @@
-﻿#include <Wire.h>
+#include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 
@@ -239,7 +239,7 @@ ShotType micUpdate(uint16_t raw, uint32_t nowMs) {
 }
 
 // ===================== Timing IMU =====================
-const uint32_t IMU_PERIOD_MS = 10; // 100 Hz
+const uint32_t IMU_PERIOD_MS = 5; // 200 Hz polling (BNO055 fusión IMUPLUS ~100 Hz, pero capturamos cada actualización con <5ms de latencia)
 uint32_t nextImuMs = 0;
 
 void updateArmingFromTilt(float roll, float pitch) {
@@ -290,9 +290,13 @@ void setup() {
   pinMode(LED_SHOT_PIN, OUTPUT);
   digitalWrite(LED_SHOT_PIN, LOW);
 
-  if (!bno.begin()) {
+  // IMUPLUS: fusión solo accel+gyro (sin magnetómetro).
+  // Misma calidad de cuaternión para roll/pitch; la fusión interna es más rápida
+  // y no se degrada en entornos con campo magnético perturbado (pistola metálica).
+  if (!bno.begin(OPERATION_MODE_IMUPLUS)) {
     while (1);
   }
+  Wire.setClock(400000); // Fast-mode I2C: cada lectura pasa de ~800µs a ~200µs
   delay(1000);
   bno.setExtCrystalUse(true);
 

@@ -10,8 +10,21 @@ import java.io.BufferedReader;
 import java.io.PrintWriter;
 import java.io.FileReader;
 import java.text.SimpleDateFormat;
+import javax.sound.sampled.*;
 
-// ===================== CONFIGURACIÓN =====================
+// ===================== ESTABILIDAD DE ELEVACION =====================
+// Pitido cuando el eje de elevacion (roll corregido) se mantiene en +-0.5
+// durante al menos ESTAB_N muestras seguidas (~500 ms a 100 Hz)
+final int   ESTAB_N          = 50;   // ventana deslizante (num muestras)
+final float ESTAB_RANGO      = 1.0;  // rango total maximo en grados (+-0.5)
+final int   PITIDO_INTERVALO = 600;  // ms entre pitidos mientras hay estabilidad
+float[]     estabBuf         = new float[ESTAB_N];
+int         estabBufIdx      = 0;
+int         estabBufCount    = 0;
+boolean     estable          = false;
+long        ultimoPitidoMs   = 0;
+
+// ===================== CONFIGURACION =====================
 // Windows:
 //String PUERTO = "COM7";
 
@@ -303,6 +316,10 @@ void iniciarSesion() {
   grafYaw.clear();
   grafShots.clear();
   yawRef = Double.NaN;
+  estabBufIdx   = 0;
+  estabBufCount = 0;
+  estable       = false;
+  ultimoPitidoMs = 0;
   tZoomMin = 0;    tZoomMax = -1;
   zoomMin[0] = -90;  zoomMax[0] = 90;   zoomLocked[0] = false;
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
