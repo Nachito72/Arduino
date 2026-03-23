@@ -16,8 +16,8 @@ import javax.sound.sampled.*;
 // Pitido cuando el eje de elevacion (roll corregido) se mantiene en +-0.5
 // durante al menos ESTAB_N muestras seguidas (~500 ms a 100 Hz)
 final int   ESTAB_N               = 50;   // ventana deslizante (num muestras ~500ms a 100Hz)
-final float ESTAB_RANGO_ROLL      = 0.050; // rango maximo en grados (elevacion) para considerar estable
-final float ESTAB_RANGO_YAW       = 0.050; // rango maximo en grados (deriva)     para considerar estable
+final float ESTAB_RANGO_ROLL      = 0.020; // rango maximo en grados (elevacion) para considerar estable
+final float ESTAB_RANGO_YAW       = 0.020; // rango maximo en grados (deriva)     para considerar estable
 final int   PITIDO_INTERVALO      = 600;  // ms entre pitidos mientras hay estabilidad
 float[]     estabBuf         = new float[ESTAB_N];  // buffer roll
 float[]     estabYawBuf      = new float[ESTAB_N];  // buffer yaw
@@ -62,6 +62,7 @@ float DIANA_POST_SEG = 0.100;  // ← 100 ms después del disparo (rastro verde)
 
 // Ventana de suavizado de curvas en pantalla (muestras; 1 = sin suavizado)
 final int SMOOTH_N = 7;
+boolean suavizadoActivo = false;  // se activa/desactiva con el checkbox de la lista
 
 void verificarRuta() {
   println("📁 Guardando datos en: " + DIR_BASE);
@@ -75,6 +76,12 @@ boolean armado      = false;
 boolean grabando    = false;   // true entre ARMED y DISARMED
 int     shotCount   = 0;       // disparos en la sesión actual
 boolean shotPendiente = false; // SHOT recibido en sesión actual
+
+// ===================== TEMPORIZADOR INTER-DISPAROS =====================
+// Se pone a 0 al armar y empieza a contar al desarmar (fin de sesión).
+// Muestra el tiempo transcurrido desde el último disparo/sesión.
+long    timerInicioMs = 0;     // millis() en que arrancó la cuenta
+boolean timerActivo   = false; // true mientras el segundero está corriendo
 
 // Sesión actual
 CopyOnWriteArrayList<String[]> bufferSesion = new CopyOnWriteArrayList<String[]>(); // todas las tramas
@@ -399,6 +406,8 @@ void iniciarSesion() {
   String[] existentes = dirDia.list();
   numSesionDia = (existentes != null) ? existentes.length + 1 : 1;
 
+  timerActivo   = false;   // mientras apunta, el timer se queda en 0
+  timerInicioMs = 0;
   println("▶ Sesión iniciada: " + fechaHoraInicio + " (#" + numSesionDia + ")");
 }
 
@@ -451,6 +460,10 @@ void finalizarSesion() {
   }
 
   println("■ Sesión guardada: " + rutaFichero + " | " + shotCount + " disparos | " + nf(durSeg, 1, 2) + "s");
+
+  // Arrancar el temporizador inter-disparos
+  timerInicioMs = millis();
+  timerActivo   = true;
 
   // Zoom automático sobre la zona del disparo al finalizar
   if (shotCount > 0 && grafShots.size() > 0) applyZoomDisparo();
@@ -781,6 +794,28 @@ void dibujarHeader() {
   fill(COL_TEXTDIM); textSize(13); textAlign(RIGHT, CENTER);
   text("Puerto: " + PUERTO + "  |  Sesiones: " + listaEntradas.size(), width - 10, HEADER_H / 2);
 
+  // ── Temporizador inter-disparos ─────────────────────────────────────
+  String timerStr   = "00:00";
+  color  timerColor = COL_TEXTDIM;
+  if (armado) {
+    // Mientras apunta → 00:00 fijo
+    timerStr  = "00:00";
+    timerColor = color(100);
+  } else if (timerActivo) {
+    long totalMs  = millis() - timerInicioMs;
+    int  totalSeg = (int)(totalMs / 1000);
+    int  tMin     = totalSeg / 60;
+    int  tSeg     = totalSeg % 60;
+    timerStr  = String.format("%02d:%02d", tMin, tSeg);
+    timerColor = color(255, 220, 50);   // amarillo brillante cuando cuenta
+  }
+  // Fondo pill del timer (abajo-izquierda del header)
+  int tmW = 120, tmH = 24, tmX = 10, tmY = HEADER_H - tmH - 6;
+  fill(30); stroke(timerActivo && !armado ? color(255, 220, 50) : color(60));
+  strokeWeight(1); rect(tmX, tmY, tmW, tmH, 5);
+  fill(timerColor); textFont(fontMono); textSize(17); textAlign(LEFT, CENTER);
+  text("\u23F1 " + timerStr, tmX + 8, tmY + tmH / 2);
+
   // Botón de prueba de sonido
   int btnSndW = 100, btnSndH = 20;
   int btnSndX = width - btnSndW - 10;
@@ -847,6 +882,13 @@ void dibujarLista() {
   if (autoValorTrasDisparo) { fill(color(0,180,80)); noStroke(); rect(cbX2+2, cbY2+2, cbW-4, cbH-4, 1); }
   fill(COL_TEXT); textFont(fontUI); textSize(12); textAlign(LEFT, TOP);
   text("Auto-valor", cbX2 + cbW + 4, cbY2);
+
+  // Checkbox "Suavizado"
+  int cbX3 = cbX2 + 82, cbY3 = cbY;
+  noFill(); stroke(COL_BORDE); rect(cbX3, cbY3, cbW, cbH, 2);
+  if (suavizadoActivo) { fill(color(200,130,0)); noStroke(); rect(cbX3+2, cbY3+2, cbW-4, cbH-4, 1); }
+  fill(COL_TEXT); textFont(fontUI); textSize(12); textAlign(LEFT, TOP);
+  text("Suaviz.", cbX3 + cbW + 4, cbY3);
 
   int topBarH = 34;  // espacio de cabecera en el panel
   int startY = ly + topBarH;
@@ -1230,13 +1272,17 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
     float yP = ay + ah - map(constrain(punto[1], vMin, vMax), vMin, vMax, 0, ah);
     ptsVis.add(new float[]{ xP, yP });
   }
-  ptsVis = suavizar(ptsVis, SMOOTH_N);
+  ptsVis = suavizar(ptsVis, suavizadoActivo ? SMOOTH_N : 1);
   if (ptsVis.size() >= 2) {
     stroke(c); strokeWeight(1.5); noFill();
     beginShape();
-    curveVertex(ptsVis.get(0)[0], ptsVis.get(0)[1]);
-    for (float[] p : ptsVis) curveVertex(p[0], p[1]);
-    curveVertex(ptsVis.get(ptsVis.size()-1)[0], ptsVis.get(ptsVis.size()-1)[1]);
+    if (suavizadoActivo) {
+      curveVertex(ptsVis.get(0)[0], ptsVis.get(0)[1]);
+      for (float[] p : ptsVis) curveVertex(p[0], p[1]);
+      curveVertex(ptsVis.get(ptsVis.size()-1)[0], ptsVis.get(ptsVis.size()-1)[1]);
+    } else {
+      for (float[] p : ptsVis) vertex(p[0], p[1]);
+    }
     endShape();
   }
 
@@ -1333,13 +1379,17 @@ void dibujarTracaExtra(int gx, int gy, int gw, int gh,
     float yP = ay + ah - map(constrain(p[1], vMin, vMax), vMin, vMax, 0, ah);
     ptsExtra.add(new float[]{ xP, yP });
   }
-  ptsExtra = suavizar(ptsExtra, SMOOTH_N);
+  ptsExtra = suavizar(ptsExtra, suavizadoActivo ? SMOOTH_N : 1);
   if (ptsExtra.size() >= 2) {
     stroke(c); strokeWeight(1.5); noFill();
     beginShape();
-    curveVertex(ptsExtra.get(0)[0], ptsExtra.get(0)[1]);
-    for (float[] p : ptsExtra) curveVertex(p[0], p[1]);
-    curveVertex(ptsExtra.get(ptsExtra.size()-1)[0], ptsExtra.get(ptsExtra.size()-1)[1]);
+    if (suavizadoActivo) {
+      curveVertex(ptsExtra.get(0)[0], ptsExtra.get(0)[1]);
+      for (float[] p : ptsExtra) curveVertex(p[0], p[1]);
+      curveVertex(ptsExtra.get(ptsExtra.size()-1)[0], ptsExtra.get(ptsExtra.size()-1)[1]);
+    } else {
+      for (float[] p : ptsExtra) vertex(p[0], p[1]);
+    }
     endShape();
   }
 
@@ -1463,13 +1513,17 @@ void dibujarDiana() {
                               cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     ptsPre.add(new float[]{ sxShot, syShot });  // conectar con la posición real del disparo
-    ptsPre = suavizar(ptsPre, SMOOTH_N);
+    ptsPre = suavizar(ptsPre, suavizadoActivo ? SMOOTH_N : 1);
     if (ptsPre.size() >= 2) {
       stroke(80, 150, 255); strokeWeight(2.5); noFill();
       beginShape();
-      curveVertex(ptsPre.get(0)[0], ptsPre.get(0)[1]);
-      for (float[] p : ptsPre) curveVertex(p[0], p[1]);
-      curveVertex(ptsPre.get(ptsPre.size()-1)[0], ptsPre.get(ptsPre.size()-1)[1]);
+      if (suavizadoActivo) {
+        curveVertex(ptsPre.get(0)[0], ptsPre.get(0)[1]);
+        for (float[] p : ptsPre) curveVertex(p[0], p[1]);
+        curveVertex(ptsPre.get(ptsPre.size()-1)[0], ptsPre.get(ptsPre.size()-1)[1]);
+      } else {
+        for (float[] p : ptsPre) vertex(p[0], p[1]);
+      }
       endShape();
     }
 
@@ -1481,13 +1535,17 @@ void dibujarDiana() {
       ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                                cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
-    ptsPost = suavizar(ptsPost, SMOOTH_N);
+    ptsPost = suavizar(ptsPost, suavizadoActivo ? SMOOTH_N : 1);
     if (ptsPost.size() >= 2) {
       stroke(80, 255, 130); strokeWeight(1.5); noFill();
       beginShape();
-      curveVertex(ptsPost.get(0)[0], ptsPost.get(0)[1]);
-      for (float[] p : ptsPost) curveVertex(p[0], p[1]);
-      curveVertex(ptsPost.get(ptsPost.size()-1)[0], ptsPost.get(ptsPost.size()-1)[1]);
+      if (suavizadoActivo) {
+        curveVertex(ptsPost.get(0)[0], ptsPost.get(0)[1]);
+        for (float[] p : ptsPost) curveVertex(p[0], p[1]);
+        curveVertex(ptsPost.get(ptsPost.size()-1)[0], ptsPost.get(ptsPost.size()-1)[1]);
+      } else {
+        for (float[] p : ptsPost) vertex(p[0], p[1]);
+      }
       endShape();
     }
 
@@ -1799,6 +1857,13 @@ void mousePressed() {
     int cbX2 = 8 + 80, cbY2 = ly + 18;
     if (mouseX >= cbX2 && mouseX <= cbX2+cbW && mouseY >= cbY2 && mouseY <= cbY2+cbH) {
       autoValorTrasDisparo = !autoValorTrasDisparo;
+      return;
+    }
+
+    // ── Checkbox "Suavizado" ───────────────────────────────
+    int cbX3 = cbX2 + 82, cbY3 = ly + 18;
+    if (mouseX >= cbX3 && mouseX <= cbX3+cbW && mouseY >= cbY3 && mouseY <= cbY3+cbH) {
+      suavizadoActivo = !suavizadoActivo;
       return;
     }
 
