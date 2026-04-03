@@ -40,7 +40,9 @@ final String PUERTO   = "COM9";
 //final String PUERTO   = "/dev/ttyACM0";
 
 final int    BAUDRATE = 500000;
-final String DIR_BASE = System.getProperty("user.home") + File.separator + "Documents" + File.separator + "RegistroDisparos";  // carpeta raíz de grabaciones
+// Carpeta de grabaciones: relativa al sketch → funciona en Windows, Mac y Linux
+// Estructura esperada: <repo>/Processing/RegistroDisparos_Giga/  →  <repo>/RegistroDisparos/
+String DIR_BASE;
 
 // Umbral de pitch lateral para capturar la referencia de rumbo
 // Solo cuando |pitchLat| está dentro de este rango se toma el primer yaw como 0°
@@ -196,6 +198,9 @@ void setup() {
   size(1400, 820);
   pixelDensity(1);
   surface.setTitle("Registro de Disparos - Giga");
+
+  // Carpeta de datos dentro del propio sketch: funciona igual en Windows, Mac y Linux
+  DIR_BASE = sketchPath("datos");
 
   fontMono = createFont("Courier New", 12, true);
   fontUI   = createFont("Arial",       12, true);
@@ -389,10 +394,11 @@ void iniciarSesion() {
   for (int s = 0; s < 10; s++) compTimeOffset[s] = 0;
   repActiva = false;
 
-  SimpleDateFormat sdfFecha = new SimpleDateFormat("yyyy-MM-dd");
-  SimpleDateFormat sdfHora  = new SimpleDateFormat("HH:mm:ss");
+  SimpleDateFormat sdfFecha    = new SimpleDateFormat("yyyy-MM-dd");
+  SimpleDateFormat sdfHora     = new SimpleDateFormat("HH:mm:ss");
+  SimpleDateFormat sdfCarpeta  = new SimpleDateFormat("yyyy/MM/dd");
   Date ahora = new Date();
-  diaActual      = sdfFecha.format(ahora);
+  diaActual       = sdfCarpeta.format(ahora);   // → datos/2026/04/03/
   fechaHoraInicio = sdfFecha.format(ahora) + " " + sdfHora.format(ahora);
 
   File dirDia = new File(DIR_BASE + File.separator + diaActual);
@@ -471,12 +477,26 @@ void cargarDiasDisponibles() {
   dias.clear();
   File base = new File(DIR_BASE);
   if (!base.exists()) return;
-  String[] subdirs = base.list();
-  if (subdirs == null) return;
-  Arrays.sort(subdirs, Collections.reverseOrder());
-  for (String d : subdirs) {
-    File fd = new File(DIR_BASE + File.separator + d);
-    if (fd.isDirectory()) dias.add(d);
+  // Estructura: datos/año/mes/día/
+  String[] anos = base.list();
+  if (anos == null) return;
+  Arrays.sort(anos, Collections.reverseOrder());
+  for (String ano : anos) {
+    File fAno = new File(base, ano);
+    if (!fAno.isDirectory()) continue;
+    String[] meses = fAno.list();
+    if (meses == null) continue;
+    Arrays.sort(meses, Collections.reverseOrder());
+    for (String mes : meses) {
+      File fMes = new File(fAno, mes);
+      if (!fMes.isDirectory()) continue;
+      String[] diaList = fMes.list();
+      if (diaList == null) continue;
+      Arrays.sort(diaList, Collections.reverseOrder());
+      for (String d : diaList) {
+        if (new File(fMes, d).isDirectory()) dias.add(ano + "/" + mes + "/" + d);
+      }
+    }
   }
 }
 
