@@ -5,9 +5,11 @@
 //  Detector de disparo por micrófono, dedicado 100% al M4.
 //  Sin I2C, sin Serial propio: solo ADC + detección + RPC al M7.
 //
-//  Algoritmo idéntico a MovSoloPlanoDisparoMaxi (EMA envelope,
-//  RANGE_MIN, CONFIRM_SAMPLES, COOLDOWN_MS) para resultados
-//  comparables entre ambos sketches.
+//  Totalmente independiente del core M7:
+//    - No necesita saber si el sistema está armado.
+//    - Corre el detector de disparo siempre.
+//    - Solo llama al M7 vía RPC cuando detecta un disparo (raro).
+//    - M7 nunca llama al M4 durante la operación normal.
 //
 //  El M4 puede muestrear el ADC a ~5-10 kHz sin interferencia
 //  del I2C del BNO055 (que corre en M7).
@@ -19,6 +21,10 @@
 // ================================================================
 
 #include <RPC.h>
+
+// ===================== VERSIÓN =====================
+#define VERSION_M4 "1.1"
+const int VERSION_M4_INT = 110;  // major*100 + minor
 
 // ===================== PIN MIC =====================
 const uint8_t MIC_PIN = A1;   // mismo pin que el original
@@ -51,9 +57,6 @@ uint16_t maxRawSeen  = 0;
 uint16_t peakAbs     = 0;
 uint16_t widthSamples = 0;
 bool     aboveOff    = false;
-
-// Estado de arme recibido desde M7
-volatile bool armed = false;
 
 uint32_t nextMicUs = 0;
 
@@ -134,13 +137,9 @@ bool micUpdate(uint16_t raw, uint32_t nowMs) {
 }
 
 // ================================================================
-// RPC: M7 avisa al M4 del estado de arme
+// RPC: M7 consulta la versión del M4
 // ================================================================
-int onSetArmed(int state) {
-  armed = (state != 0);
-  if (!armed) resetMicCandidate();
-  return 1;
-}
+int onGetVersionM4() { return VERSION_M4_INT; }
 
 // ================================================================
 void calibrateMicCenter() {
@@ -157,7 +156,7 @@ void calibrateMicCenter() {
 void setup() {
   // M4 no usa Serial propio — la comunicación es via RPC al M7
   RPC.begin();
-  RPC.bind("setArmed", onSetArmed);
+  RPC.bind("getVersionM4", onGetVersionM4);
 
   // Calibrar centro del micrófono
   calibrateMicCenter();
@@ -184,22 +183,12 @@ void loop() {
   if ((int32_t)(nowUs - nextMicUs) >= 0) {
     uint16_t raw = analogRead(MIC_PIN);
 
-    // Solo procesar si el M7 ha indicado que está armado
-    // (igual que el original, que solo envía datos en modo armado)
-    if (armed) {
-      bool shot = micUpdate(raw, nowMs);
-      if (shot) {
-        lastShotMs = nowMs;
-        // Notificar al M7 vía RPC — él imprimirá "SHOT,MECH" por Serial
-        RPC.call("shotDetected");
-      }
-    } else {
-      // Mantener EMA actualizada aunque no haya arme,
-      // para que la base no diverja cuando se arme
-      int16_t  centered = (int16_t)raw - micCenter;
-      uint16_t mag      = u16abs(centered);
-      env  = ema_div(env, mag, 2);
-      base = ema_div(base, env, 8);
+    // Detector siempre activo — M7 decide si usa el disparo según su estado de arme.
+    // M4 no necesita conocer el estado de arme: los dos cores son independientes.
+    bool shot = micUpdate(raw, nowMs);
+    if (shot) {
+      lastShotMs = nowMs;
+      RPC.call("shotDetected");
     }
 
     nextMicUs += MIC_TICK_US;

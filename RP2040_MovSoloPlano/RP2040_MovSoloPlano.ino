@@ -32,31 +32,17 @@
 // ================================================================
 
 #include <Wire.h>
-#include <EEPROM.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 
 // ================================================================
 //  CONFIGURACIÓN DE PINES
 // ================================================================
-const uint8_t MIC_PIN     = A0;          // GP26  — micrófono (Core 1)
-const uint8_t LED_SHOT_PIN = LED_BUILTIN; // GP25  — LED parpadeo disparo
-
-// ================================================================
-//  EEPROM — offsets de calibración BNO055 (misma lógica que Diagnostico)
-// ================================================================
-const int  EEPROM_ADDR  = 0;
-const byte EEPROM_FIRMA = 0xB7;
-
-bool cargarOffsetsBNO(Adafruit_BNO055 &sensor) {
-  byte firma;
-  EEPROM.get(EEPROM_ADDR, firma);
-  if (firma != EEPROM_FIRMA) return false;
-  adafruit_bno055_offsets_t offsets;
-  EEPROM.get(EEPROM_ADDR + 1, offsets);
-  sensor.setSensorOffsets(offsets);
-  return true;
-}
+const uint8_t MIC_PIN      = A0;   // GP26 — micrófono (Core 1)
+// Waveshare RP2040-Zero: LED NeoPixel en GP16 (no es un LED simple).
+// Usamos GP25 como indicador simple con un LED externo, o desactivamos el blink.
+// Si no tienes LED externo, deja LED_SHOT_PIN = 25 — no hará nada pero no falla.
+const uint8_t LED_SHOT_PIN = 25;   // GP25 — LED externo opcional
 
 // ================================================================
 //  LED PARPADEO
@@ -78,9 +64,11 @@ void startShotBlink(uint32_t nowMs) {
 }
 
 // ================================================================
-//  IMU — BNO055
+//  IMU — BNO055 (dirección se detecta automáticamente en setup)
 // ================================================================
-Adafruit_BNO055 bno = Adafruit_BNO055();
+Adafruit_BNO055 bno28_g = Adafruit_BNO055(55, 0x28, &Wire);
+Adafruit_BNO055 bno29_g = Adafruit_BNO055(55, 0x29, &Wire);
+Adafruit_BNO055 *bno_p  = nullptr;  // puntero al objeto activo
 
 // ================================================================
 //  ARME POR INCLINACIÓN (mismos rangos que el original)
@@ -105,6 +93,15 @@ uint8_t levelOffStreak = 0;
 // Variable compartida Core 0 → Core 1 (escribe Core 0, lee Core 1)
 // volatile garantiza visibilidad entre cores en ARM M0+
 volatile bool armed_c1 = false;
+
+// ================================================================
+//  FILTRO COMPLEMENTARIO ELEVACIÓN
+//  Idéntico al de MovSoloPlanoDisparoMaxi.ino
+// ================================================================
+const float ROLL_OFFSET  = -85.0f;  // offset de montaje (la posición "plana" del arma)
+const float FILTER_ALPHA = 0.95f;   // peso del giroscopio; τ ≈ 100 ms a 200 Hz
+float filteredElev = 0.0f;
+bool  filtElevInit = false;
 
 // ================================================================
 //  TIMING IMU
@@ -174,9 +171,11 @@ void updateArmingFromTilt(float roll, float pitch) {
 }
 
 void setup() {
-  Serial.begin(500000);   // mismo baud que el original
+  Serial.begin(115200);   // mismo baud que el original
   while (!Serial && millis() < 3000) {}
-
+  
+  Serial.println("Iniciando..3..");
+  
   pinMode(LED_SHOT_PIN, OUTPUT);
   digitalWrite(LED_SHOT_PIN, LOW);
 
@@ -184,21 +183,57 @@ void setup() {
   analogReadResolution(10);
 
   // BNO055 en modo IMUPLUS (accel + gyro, sin magnetómetro)
-  // Más estable en entornos metálicos (arma)
-  Wire.begin();
-  Wire.setClock(400000);  // Fast-mode I2C: lectura ~200µs en lugar de ~800µs
+  // Probar GP4=SDA/GP5=SCL y también invertido GP4=SCL/GP5=SDA
+  bool imuOk = false;
+  uint8_t sdaPin = 4, sclPin = 5;
 
-  if (!bno.begin(OPERATION_MODE_IMUPLUS)) {
-    Serial.println("ERROR: BNO055 no encontrado");
-    while (1) {}
+  for (int intento = 0; intento < 2 && !imuOk; intento++) {
+    if (intento == 1) { sdaPin = 5; sclPin = 4; }  // invertir en 2º intento
+
+    Wire.end();
+    // Activar pull-ups internos del RP2040 antes de Wire.begin()
+    // (son débiles ~65kΩ, idealmente usar 4.7kΩ externos)
+    pinMode(sdaPin, INPUT_PULLUP);
+    pinMode(sclPin, INPUT_PULLUP);
+    Wire.setSDA(sdaPin);
+    Wire.setSCL(sclPin);
+    Wire.begin();
+    Wire.setClock(100000);
+    delay(300);
+
+    Serial.print("Probando SDA=GP"); Serial.print(sdaPin);
+    Serial.print(" SCL=GP"); Serial.println(sclPin);
+
+    // Escanear
+    int found = 0;
+    for (byte addr = 1; addr < 127; addr++) {
+      Wire.beginTransmission(addr);
+      if (Wire.endTransmission() == 0) {
+        Serial.print("  I2C encontrado en 0x");
+        if (addr < 16) Serial.print("0");
+        Serial.println(addr, HEX);
+        found++;
+      }
+    }
+    if (found == 0) { Serial.println("  Ninguno en este intento"); continue; }
+
+    if (bno28_g.begin(OPERATION_MODE_IMUPLUS)) {
+      Serial.println("BNO055 OK en 0x28"); bno_p = &bno28_g; imuOk = true;
+    } else if (bno29_g.begin(OPERATION_MODE_IMUPLUS)) {
+      Serial.println("BNO055 OK en 0x29"); bno_p = &bno29_g; imuOk = true;
+    }
   }
 
-  delay(100);
-  if (cargarOffsetsBNO(bno)) {
-    Serial.println("BNO055: calibracion EEPROM cargada");
+  if (!imuOk) {
+    Serial.println("ERROR: BNO055 no encontrado. Comprueba:");
+    Serial.println("  1) VIN del BNO055 conectado a VBUS (5V), no a 3V3");
+    Serial.println("  2) GND comun entre RP2040 y BNO055");
+    Serial.println("  3) SDA/SCL no invertidos");
+    while (1) { delay(1000); }
   }
-  delay(100);
-  bno.setExtCrystalUse(true);
+
+  delay(200);
+  bno_p->setExtCrystalUse(true);
 
   nextImuMs = millis();
   Serial.println("Ready");
@@ -221,7 +256,7 @@ void loop() {
   if ((int32_t)(nowMs - nextImuMs) >= 0) {
     nextImuMs += IMU_PERIOD_MS;
 
-    imu::Quaternion q = bno.getQuat();
+    imu::Quaternion q = bno_p->getQuat();
     double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
 
     const double R2D = 57.29577951;
@@ -234,12 +269,23 @@ void loop() {
 
     updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
+    // Filtro complementario: gyro.x() = velocidad angular del eje de roll (°/s)
+    // Elimina los "escalones" del acelerómetro manteniendo la referencia absoluta.
+    imu::Vector<3> gyroVec = bno_p->getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+    float rollAbs = (float)(rollDeg - ROLL_OFFSET);
+    float dtSeg   = IMU_PERIOD_MS / 1000.0f;
+    if (!filtElevInit) { filteredElev = rollAbs; filtElevInit = true; }
+    else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.x() * dtSeg)
+                      + (1.0f - FILTER_ALPHA) * rollAbs;
+
     if (armed) {
-      // Formato idéntico al original: qw,qx,qy,qz
+      // 5 campos: qw,qx,qy,qz,filteredElev
+      // Processing usa los 4 cuaterniones para yaw y filteredElev para la elevación.
       Serial.print(qw, 6); Serial.print(",");
       Serial.print(qx, 6); Serial.print(",");
       Serial.print(qy, 6); Serial.print(",");
-      Serial.println(qz, 6);
+      Serial.print(qz, 6); Serial.print(",");
+      Serial.println(filteredElev, 4);
     }
   }
 

@@ -6,7 +6,7 @@
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(500000);
   while (!Serial) {
     delay(10); // Espera a que se abra el puerto serie
   }
@@ -50,18 +50,18 @@ void loop() {
   Serial.print(linAccel.z(), 4);
 
   Serial.print(" | Euler (deg): Yaw=");
-  Serial.print(euler.x(), 2);
+  Serial.print(euler.x(), 4);
   Serial.print(" Pitch=");
-  Serial.print(euler.y(), 2);
+  Serial.print(euler.y(), 4);
   Serial.print(" Roll=");
-  Serial.print(euler.z(), 2);
+  Serial.print(euler.z(), 4);
 
   Serial.print(" | Gyro (deg/s): X=");
-  Serial.print(gyro.x(), 2);
+  Serial.print(gyro.x(), 4);
   Serial.print(" Y=");
-  Serial.print(gyro.y(), 2);
+  Serial.print(gyro.y(), 4);
   Serial.print(" Z=");
-  Serial.print(gyro.z(), 2);
+  Serial.print(gyro.z(), 4);
 
   Serial.println();
 

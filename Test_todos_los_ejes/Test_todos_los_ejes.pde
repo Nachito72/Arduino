@@ -2,7 +2,7 @@ import processing.serial.*;
 
 // ===================== CONFIGURACIÓN =====================
 final String PUERTO    = "COM7";   // ← Cambia al puerto de tu Arduino
-final int    BAUDRATE  = 115200;
+final int    BAUDRATE  = 500000;
 final int    MAX_PUNTOS = 300;     // Puntos visibles en el gráfico
 
 // ===================== SERIE =====================

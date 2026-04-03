@@ -32,6 +32,17 @@ enum ShotType : uint8_t {
 // ===================== IMU =====================
 Adafruit_BNO055 bno = Adafruit_BNO055();
 
+// ===================== FILTRO COMPLEMENTARIO ELEVACIÓN =====================
+// Combina giroscopio (suave, sin escalones) con roll absoluto (estable a largo plazo).
+// ROLL_OFFSET : mismo valor que en Processing — se aplica en Arduino para que las
+//               grabaciones ya contengan el ángulo corregido directamente.
+// FILTER_ALPHA: peso del giroscopio. 0.95 → τ ≈ 100 ms a 200 Hz.
+//   Subir → más suave, más lag.  Bajar → menos suave, más fiel al acelerómetro.
+const float ROLL_OFFSET  = -85.0f;
+const float FILTER_ALPHA = 0.95f;
+float filteredElev = 0.0f;
+bool  filtElevInit = false;
+
 // ===================== ARMADO POR INCLINACIÓN =====================
 // Geometría del arma montada con el BNO055:
 //   ROLL  : rotación sobre X. Arma en posición de tiro → aprox. -60° a -130°.
@@ -369,13 +380,23 @@ void loop() {
     // Para arming usamos roll y pitchLat (pitchDeg)
     updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
+    // Filtro complementario: gyro.x() = velocidad angular en el eje de roll (°/s)
+    // Elimina los escalones del acelerómetro manteniendo la referencia absoluta.
+    imu::Vector<3> gyroVec = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+    float rollAbs = (float)(rollDeg - ROLL_OFFSET);
+    float dtSeg   = IMU_PERIOD_MS / 1000.0f;
+    if (!filtElevInit) { filteredElev = rollAbs; filtElevInit = true; }
+    else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.x() * dtSeg)
+                      + (1.0f - FILTER_ALPHA) * rollAbs;
+
     if (armed) {
-      // Enviar cuaternión como 4 floats: w,x,y,z
-      // Processing recalcula roll/yaw/pitchLat con precisión double
+      // 5 campos: qw,qx,qy,qz,filteredElev
+      // Processing usa los 4 cuaterniones para yaw y filteredElev para la elevación.
       Serial.print(qw, 6); Serial.print(",");
       Serial.print(qx, 6); Serial.print(",");
       Serial.print(qy, 6); Serial.print(",");
-      Serial.println(qz, 6);
+      Serial.print(qz, 6); Serial.print(",");
+      Serial.println(filteredElev, 4);
     }
   }
 

@@ -1,16 +1,21 @@
 // ================================================================
 //  Giga_MovSoloPlano.ino  —  CORE M7 (principal)
 //  Arduino Giga R1 WiFi
-//
-//  Equivalente exacto a MovSoloPlanoDisparoMaxi pero con dual-core:
+// Nacho
+//  Equivalente a MovSoloPlanoDisparoMaxi con dual-core:
 //    M7 → IMU BNO055, arming, Serial a Processing, LED
 //    M4 → Mic ADC + detección de disparo (ver Giga_M4_Mic.ino)
 //
-//  SALIDA SERIAL: idéntica al sketch original para poder comparar
+//  Los dos cores son TOTALMENTE INDEPENDIENTES:
+//    - M7 nunca llama al M4 durante la operación normal.
+//    - M4 notifica al M7 vía RPC solo cuando detecta un disparo.
+//    - M4 corre el detector siempre, sin esperar estado de arme.
+//
+//  SALIDA SERIAL:
 //    "Ready"
 //    "ARMED" / "DISARMED"
-//    "SHOT,MECH"
-//    "qw,qx,qy,qz"   (cuando armado, 100 Hz)
+//    ms,qw,qx,qy,qz,filteredElev,shot   (cuando armado, 100 Hz)
+//    shot=1 en la trama del disparo, 0 el resto
 //
 //  INSTRUCCIONES:
 //    1. Sube primero Giga_M4_Mic.ino al M4 (Tools → Board → Giga M4)
@@ -22,6 +27,9 @@
 #include <RPC.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
+
+// ===================== VERSIÓN =====================
+#define VERSION_M7 "1.5"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -43,11 +51,6 @@ Adafruit_BNO055 bno = Adafruit_BNO055();  // 0x28 si ADR=GND, 0x29 si ADR=VCC
 // El M4 detecta el disparo y llama a shotDetected() vía RPC.
 // M7 recibe la llamada y pone este flag.
 volatile bool shotPending = false;
-
-// Cooldown compartido: M7 informa al M4 tras confirmar el disparo
-// para que reinicie su cooldown interno.
-uint32_t lastShotMs = 0;
-const uint16_t COOLDOWN_MS = 5000;
 
 // ===================== ARME POR INCLINACIÓN =====================
 // Mismos rangos que MovSoloPlanoDisparoMaxi
@@ -72,19 +75,55 @@ uint8_t levelOffStreak = 0;
 const uint32_t IMU_PERIOD_MS = 10;   // 100 Hz — igual que el original
 uint32_t nextImuMs = 0;
 
+// ===================== FILTRO COMPLEMENTARIO ELEVACIÓN =====================
+// Combina giroscopio (suave) con roll absoluto (estable a largo plazo).
+// ROLL_OFFSET: ángulo raw que corresponde a pistola plana (0° real).
+// FILTER_ALPHA: peso del giroscopio. 0.95 → τ ≈ 200 ms a 100 Hz.
+const float ROLL_OFFSET  = -85.0f;
+const float FILTER_ALPHA = 0.95f;
+float filteredElev = 0.0f;
+bool  filtElevInit = false;
+
+// ===================== SHOT FLAG =====================
+// En lugar de enviar "SHOT,MECH", se añade 0/1 como último campo CSV.
+bool shotThisFrame = false;
+
+// ===================== BNO055 WATCHDOG =====================
+// Si el sensor devuelve cuaternión nulo (fallo I2C transitorio) durante
+// BNO_MAX_ERR frames consecutivos se intenta reinicializar.
+// Tras cada reinit se respeta un periodo de calentamiento (bnoWarmupEndMs)
+// durante el cual los ceros del arranque de la fusión NO cuentan como error.
+uint8_t  bnoErrCount    = 0;
+const uint8_t BNO_MAX_ERR = 50;
+uint32_t bnoWarmupEndMs = 0;  // no contar errores hasta que millis() >= este valor
+
+// ================================================================
+// Reinicio del BNO055 tras fallo I2C
+// ================================================================
+bool reinitBNO() {
+  Serial.println("// BNO055: fallo I2C — reintentando init...");
+  Wire.end();
+  delay(50);
+  Wire.begin();
+  Wire.setClock(100000);
+  delay(150);
+  if (!bno.begin(OPERATION_MODE_IMUPLUS)) {
+    Serial.println("// BNO055: reinit FALLIDO");
+    return false;
+  }
+  bno.setExtCrystalUse(true);
+  filtElevInit    = false;
+  bnoWarmupEndMs  = millis() + 1000; // esperar 1s antes de contar errores de fusión
+  Serial.println("// BNO055: reinit OK");
+  return true;
+}
+
 // ================================================================
 // RPC: función que el M4 llama cuando detecta un disparo
 // ================================================================
 int onShotDetected() {
   shotPending = true;
   return 1;
-}
-
-// ================================================================
-// Sin EEPROM en Giga R1 (Mbed OS): el BNO055 se autocalibrará en uso
-// ================================================================
-bool cargarOffsetsBNO() {
-  return false;  // No hay EEPROM en la plataforma Mbed/STM32H747
 }
 
 // ================================================================
@@ -112,8 +151,6 @@ void updateArmingFromTilt(float roll, float pitch) {
       armed = true;
       levelOnStreak  = 0;
       levelOffStreak = 0;
-      // Avisar al M4 que está armado para que active la detección
-      RPC.call("setArmed", (int)1);
       Serial.println("ARMED");
     }
   } else {
@@ -124,8 +161,6 @@ void updateArmingFromTilt(float roll, float pitch) {
       armed          = false;
       levelOffStreak = 0;
       levelOnStreak  = 0;
-      // Avisar al M4 que está desarmado
-      RPC.call("setArmed", (int)0);
       Serial.println("DISARMED");
     }
   }
@@ -133,8 +168,9 @@ void updateArmingFromTilt(float roll, float pitch) {
 
 // ================================================================
 void setup() {
-  Serial.begin(500000);   // mismo baud que el original
-  while (!Serial) {}
+  Serial.begin(500000);
+  // Esperar Serial máximo 2 s — no bloquear si no hay monitor abierto
+  { uint32_t t0 = millis(); while (!Serial && millis() - t0 < 2000) {} }
 
   pinMode(LED_SHOT_PIN, OUTPUT);
   digitalWrite(LED_SHOT_PIN, LOW);
@@ -143,52 +179,41 @@ void setup() {
   RPC.begin();
   RPC.bind("shotDetected", onShotDetected);
 
-  // --- Escáner I2C diagnóstico ---
-  // Busca dispositivos en Wire (pines 20/21) y Wire1 a 100 kHz.
-  // Imprime cada dirección que responda. Quitar este bloque tras diagnosticar.
+  // --- BNO055 (IMUPLUS: fusión accel+gyro, sin magnetómetro) ---
   Wire.begin();
-  Wire.setClock(100000);
-  Wire1.begin();
-  Wire1.setClock(100000);
-  delay(300); // dar tiempo al BNO055 a arrancar
-
-  Serial.println("--- Escaner I2C ---");
-  bool encontrado = false;
-  for (uint8_t bus = 0; bus < 2; bus++) {
-    TwoWire &w = (bus == 0) ? Wire : Wire1;
-    for (uint8_t addr = 1; addr < 127; addr++) {
-      w.beginTransmission(addr);
-      uint8_t err = w.endTransmission();
-      if (err == 0) {
-        Serial.print("  Dispositivo en Wire"); Serial.print(bus);
-        Serial.print(" direccion 0x"); Serial.println(addr, HEX);
-        encontrado = true;
-      }
-    }
-  }
-  if (!encontrado) Serial.println("  Ningun dispositivo I2C encontrado.");
-  Serial.println("--- Fin escaner ---");
-
-  // --- BNO055 ---
-  Wire.setClock(100000);
-  if (!bno.begin()) {
+  delay(200);
+  if (!bno.begin(OPERATION_MODE_IMUPLUS)) {
     Serial.println("ERROR: BNO055 no encontrado");
     while (1) {}
   }
-  delay(100);
-
-  // Cargar calibración guardada (si existe)
-  if (cargarOffsetsBNO()) {
-    Serial.println("BNO055: calibracion EEPROM cargada");
-  }
-
-  delay(100);
+  // 100kHz: más estable bajo Mbed OS/STM32H7 que 400kHz
+  Wire.setClock(100000);
+  delay(1000);  // esperar a que el algoritmo de fusión converja
   bno.setExtCrystalUse(true);
+  bnoWarmupEndMs = 0;  // setup ya esperó: loop() empieza con sensor listo
 
   nextImuMs = millis();
 
-  Serial.println("Ready");
-  Serial.println("DISARMED");
+  // Versiones de ambos programas (prefijo "//" → Processing las ignora)
+  Serial.println("// Giga_MovSoloPlano v" VERSION_M7);
+  // Consultar versión del M4 vía RPC con timeout de 500 ms
+{
+  bool ok = true;
+
+  // RPC.call() devuelve object_handle (no future)
+  auto oh = RPC.call("getVersionM4");
+
+  // Acceso correcto al valor: object_handle::get() -> msgpack::object -> as<int>()
+  int m4v = oh.get().as<int>();
+
+  Serial.print("// Giga_M4_Mic v");
+  Serial.print(m4v / 100);
+  Serial.print(".");
+  Serial.println(m4v % 100);
+}
+
+Serial.println("Ready");
+Serial.println("DISARMED");
 }
 
 // ================================================================
@@ -197,10 +222,9 @@ void loop() {
 
   // --- 1) Procesar disparo detectado por M4 ---
   if (shotPending) {
-    shotPending = false;
-    lastShotMs  = nowMs;
+    shotPending   = false;
+    shotThisFrame = true;   // se enviará como campo =1 en la próxima trama IMU
     startShotBlink(nowMs);
-    Serial.println("SHOT,MECH");             // idéntico al original
   }
 
   // --- 2) Scheduler IMU 100 Hz ---
@@ -210,23 +234,62 @@ void loop() {
     imu::Quaternion q = bno.getQuat();
     double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
 
-    // Convertir a roll/pitch para arming (misma fórmula que el original)
-    const double R2D = 57.29577951;
-    double sinr  = 2.0*(qw*qx + qy*qz);
-    double cosr  = 1.0 - 2.0*(qx*qx + qy*qy);
-    double rollDeg  = atan2(sinr, cosr) * R2D;
+    // ── Validar cuaternión: norma² debe ser ≈ 1.0 ───────────────────
+    // El BNO055 devuelve (0,0,0,0) cuando hay fallo I2C transitorio.
+    double quatNorm2 = qw*qw + qx*qx + qy*qy + qz*qz;
+    bool quatValido  = (quatNorm2 > 0.5);
 
-    double sinp  = 2.0*(qw*qy - qz*qx);
-    double pitchDeg = (fabs(sinp) >= 1.0) ? copysign(90.0, sinp) : asin(sinp) * R2D;
+    if (!quatValido) {
+      // Ignorar este frame: no actualizar arming ni filtro.
+      // Solo contar como error si el periodo de calentamiento ya pasó.
+      if (nowMs >= bnoWarmupEndMs) {
+        if (++bnoErrCount >= BNO_MAX_ERR) {
+          bnoErrCount = 0;
+          reinitBNO();
+        }
+      }
+    } else {
+      bnoErrCount = 0;
 
-    updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
+      // Convertir a roll/pitch para arming (misma fórmula que el original)
+      const double R2D = 57.29577951;
+      double sinr  = 2.0*(qw*qx + qy*qz);
+      double cosr  = 1.0 - 2.0*(qx*qx + qy*qy);
+      double rollDeg  = atan2(sinr, cosr) * R2D;
 
-    if (armed) {
-      // Formato idéntico al original: qw,qx,qy,qz
-      Serial.print(qw, 6); Serial.print(",");
-      Serial.print(qx, 6); Serial.print(",");
-      Serial.print(qy, 6); Serial.print(",");
-      Serial.println(qz, 6);
+      double sinp  = 2.0*(qw*qy - qz*qx);
+      double pitchDeg = (fabs(sinp) >= 1.0) ? copysign(90.0, sinp) : asin(sinp) * R2D;
+
+      updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
+
+      // Filtro complementario:
+      //   Parte GYRO    → gyro.x() integrado: movimiento continuo y suave (0.004° res.)
+      //   Parte ABSOLUTA→ Euler BNO055 (.y() = roll, 1/16°=0.0625°): ancla al grado real
+      //
+      // Usar el Euler como referencia absoluta en lugar del roll del cuaternión hace que
+      // el filtro converja suavemente hacia los grados enteros reales sin ningún salto.
+      // No hay floorf() ni discontinuidades: el gyro suaviza los "escalones" del Euler.
+      imu::Vector<3> gyroVec  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+      imu::Vector<3> eulerVec = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+      float eulerRollAbs = (float)(eulerVec.y() - ROLL_OFFSET);
+      float dtSeg        = IMU_PERIOD_MS / 1000.0f;
+      if (!filtElevInit) { filteredElev = eulerRollAbs; filtElevInit = true; }
+      else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.x() * dtSeg)
+                        + (1.0f - FILTER_ALPHA) * eulerRollAbs;
+
+      if (armed) {
+        // Formato: ms,qw,qx,qy,qz,filteredElev,shot
+        // shot = 1 en la trama en que se detectó el disparo, 0 el resto
+        uint8_t shotBit = shotThisFrame ? 1 : 0;
+        shotThisFrame = false;
+        Serial.print(nowMs);        Serial.print(",");
+        Serial.print(qw, 6);        Serial.print(",");
+        Serial.print(qx, 6);        Serial.print(",");
+        Serial.print(qy, 6);        Serial.print(",");
+        Serial.print(qz, 6);        Serial.print(",");
+        Serial.print(filteredElev, 4); Serial.print(",");
+        Serial.println(shotBit);
+      }
     }
   }
 
