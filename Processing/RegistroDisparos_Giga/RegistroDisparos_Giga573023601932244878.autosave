@@ -57,14 +57,8 @@ final float ROLL_OFFSET = -85.0;  // offset aplicado en firmware Giga_MovSoloPla
 float PRESHOT_SEG = 0.200;  // ← 200 ms por defecto
 
 // Ventana de la diana: tiempo antes y después del disparo que se dibuja como rastro
-float DIANA_PRE_SEG    = 0.200;  // ventana azul pre-disparo (y referencia del centro)
-float DIANA_POST_SEG   = 0.100;  // ventana verde post-disparo
-float DIANA_YELLOW_SEG = 3.000;  // ventana amarilla: antes de la ventana azul
-
-// Colores de las trazas de la diana (configurables)
-color DIANA_COL_PRE    = color( 80, 150, 255);  // azul:     DIANA_PRE_SEG antes del disparo
-color DIANA_COL_POST   = color( 80, 255, 130);  // verde:    DIANA_POST_SEG después del disparo
-color DIANA_COL_YELLOW = color(255, 220,  50);  // amarillo: DIANA_YELLOW_SEG previos a la ventana azul
+float DIANA_PRE_SEG  = 0.200;
+float DIANA_POST_SEG = 0.100;
 
 // Ventana de suavizado de curvas en pantalla (muestras; 1 = sin suavizado)
 final int SMOOTH_N = 7;
@@ -1632,14 +1626,13 @@ void dibujarDiana() {
   }
 
   float tShot = grafShots.get(grafShots.size() - 1)[0];
-  float tRef  = tShot - DIANA_PRE_SEG;          // referencia del centro (inicio tramo azul)
-  float tPre  = tRef  - DIANA_YELLOW_SEG;       // inicio de la ventana extendida (tramo amarillo)
+  float tPre  = tShot - DIANA_PRE_SEG;
   float tPost = tShot + DIANA_POST_SEG;
 
   int nPts = min(grafRoll.size(), grafYaw.size());
   float rollRef = 0, yawRef_d = 0;
   for (int i = 0; i < nPts; i++) {
-    if (grafRoll.get(i)[0] >= tRef) { rollRef = grafRoll.get(i)[1]; yawRef_d = grafYaw.get(i)[1]; break; }
+    if (grafRoll.get(i)[0] >= tPre) { rollRef = grafRoll.get(i)[1]; yawRef_d = grafYaw.get(i)[1]; break; }
   }
 
   float rollShot = rollRef, yawShot = yawRef_d;
@@ -1691,38 +1684,8 @@ void dibujarDiana() {
   line(cx, gy + 8, cx, gy + gh - 8);
 
   if (ventana.size() >= 2) {
-    // ── Tramo amarillo: desde tPre hasta tRef ──────────────────────────
-    ArrayList<float[]> ptsYellow = new ArrayList<float[]>();
-    for (float[] p : ventana) {
-      if (p[0] >= tRef) break;
-      ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
-                                 cy - map(p[1], -maxDev, maxDev, -r, r) });
-    }
-    for (float[] p : ventana) {  // punto de unión con el tramo azul
-      if (p[0] >= tRef) {
-        ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
-                                   cy - map(p[1], -maxDev, maxDev, -r, r) });
-        break;
-      }
-    }
-    ptsYellow = suavizar(ptsYellow, suavizadoActivo ? SMOOTH_N : 1);
-    if (ptsYellow.size() >= 2) {
-      stroke(DIANA_COL_YELLOW); strokeWeight(1.5); noFill();
-      beginShape();
-      if (suavizadoActivo) {
-        curveVertex(ptsYellow.get(0)[0], ptsYellow.get(0)[1]);
-        for (float[] p : ptsYellow) curveVertex(p[0], p[1]);
-        curveVertex(ptsYellow.get(ptsYellow.size()-1)[0], ptsYellow.get(ptsYellow.size()-1)[1]);
-      } else {
-        for (float[] p : ptsYellow) vertex(p[0], p[1]);
-      }
-      endShape();
-    }
-
-    // ── Tramo azul: desde tRef hasta tShot ─────────────────────────────
     ArrayList<float[]> ptsPre = new ArrayList<float[]>();
     for (float[] p : ventana) {
-      if (p[0] < tRef) continue;
       if (p[0] > tShot) break;
       ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                               cy - map(p[1], -maxDev, maxDev, -r, r) });
@@ -1730,7 +1693,7 @@ void dibujarDiana() {
     ptsPre.add(new float[]{ sxShot, syShot });
     ptsPre = suavizar(ptsPre, suavizadoActivo ? SMOOTH_N : 1);
     if (ptsPre.size() >= 2) {
-      stroke(DIANA_COL_PRE); strokeWeight(2.5); noFill();
+      stroke(80, 150, 255); strokeWeight(2.5); noFill();
       beginShape();
       if (suavizadoActivo) {
         curveVertex(ptsPre.get(0)[0], ptsPre.get(0)[1]);
@@ -1742,7 +1705,6 @@ void dibujarDiana() {
       endShape();
     }
 
-    // ── Tramo verde: post-disparo ───────────────────────────────────────
     ArrayList<float[]> ptsPost = new ArrayList<float[]>();
     ptsPost.add(new float[]{ sxShot, syShot });
     for (float[] p : ventana) {
@@ -1752,7 +1714,7 @@ void dibujarDiana() {
     }
     ptsPost = suavizar(ptsPost, suavizadoActivo ? SMOOTH_N : 1);
     if (ptsPost.size() >= 2) {
-      stroke(DIANA_COL_POST); strokeWeight(1.5); noFill();
+      stroke(80, 255, 130); strokeWeight(1.5); noFill();
       beginShape();
       if (suavizadoActivo) {
         curveVertex(ptsPost.get(0)[0], ptsPost.get(0)[1]);
@@ -1768,7 +1730,7 @@ void dibujarDiana() {
       if (abs(p[0] - tShot) < 0.003) continue;
       float sx = cx + map(p[2], -maxDev, maxDev, r, -r);
       float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
-      fill(p[0] < tRef ? DIANA_COL_YELLOW : (p[0] < tShot ? DIANA_COL_PRE : DIANA_COL_POST)); noStroke();
+      fill(p[0] < tShot ? color(80, 150, 255) : color(80, 255, 130)); noStroke();
       ellipse(sx, sy, 4, 4);
     }
 
@@ -1784,7 +1746,7 @@ void dibujarDiana() {
       float nx = adx / alen, ny = ady / alen;
       float headLen = min(14, alen * 0.5);
       float hx2 = sxShot - nx * headLen, hy2 = syShot - ny * headLen;
-      fill(DIANA_COL_PRE); noStroke();
+      fill(80, 150, 255); noStroke();
       triangle(sxShot, syShot, hx2 + (-ny) * 4, hy2 + nx * 4, hx2 - (-ny) * 4, hy2 - nx * 4);
     }
   }
@@ -1798,7 +1760,7 @@ void dibujarDiana() {
   fill(255); noStroke(); ellipse(sxShot, syShot, 4, 4);
 
   fill(COL_TEXT); textFont(fontUI); textSize(14); textAlign(CENTER, TOP);
-  text("DIANA  —  Trayectoria del disparo  ( \u2212" + nf(DIANA_YELLOW_SEG + DIANA_PRE_SEG, 1, 1) + " s \u2192 \u2212" + nf(DIANA_PRE_SEG * 1000, 1, 0) + " ms \u2192 \u25cf \u2192 +" + nf(DIANA_POST_SEG * 1000, 1, 0) + " ms )", cx, gy + 8);
+  text("DIANA  —  Trayectoria del disparo  ( \u2212300 ms \u2192 \u25cf \u2192 +100 ms )", cx, gy + 8);
 
   pushMatrix();
   translate(gx + 22, cy);
@@ -1809,7 +1771,8 @@ void dibujarDiana() {
 
   fill(COL_YAW); textFont(fontUI); textSize(11); textAlign(CENTER, CENTER);
   text("YAW / Rumbo", cx, gy + gh - 14);
-  textSize(10); textAlign(CENTER, CENTER);
+
+  fill(COL_TEXTDIM); textFont(fontMono); textSize(10); textAlign(CENTER, CENTER);
   text("\u25b2 +Roll", cx, cy - r - 16);
   text("\u25bc \u2212Roll", cx, cy + r + 16);
   text("\u25c4 +Yaw", gx + 44, cy);
@@ -1817,17 +1780,13 @@ void dibujarDiana() {
 
   int legX = gx + 12;
   int legDY = gy + 30;
-  noStroke(); fill(DIANA_COL_YELLOW); rect(legX, legDY - 1, 20, 3, 1);
-  fill(DIANA_COL_YELLOW); textFont(fontUI); textSize(12); textAlign(LEFT, CENTER);
-  text("Pre-disparo (" + nf(DIANA_YELLOW_SEG, 1, 0) + " s)", legX + 26, legDY + 1);
+  noStroke(); fill(color(80, 150, 255)); rect(legX, legDY - 1, 20, 3, 1);
+  fill(color(80, 150, 255)); textFont(fontUI); textSize(12); textAlign(LEFT, CENTER);
+  text("Pre-disparo (300 ms)", legX + 26, legDY + 1);
   legDY += 18;
-  noStroke(); fill(DIANA_COL_PRE); rect(legX, legDY - 1, 20, 3, 1);
-  fill(DIANA_COL_PRE); textAlign(LEFT, CENTER);
-  text("Pre-disparo (" + nf(DIANA_PRE_SEG * 1000, 1, 0) + " ms)", legX + 26, legDY + 1);
-  legDY += 18;
-  noStroke(); fill(DIANA_COL_POST); rect(legX, legDY - 1, 20, 3, 1);
-  fill(DIANA_COL_POST); textAlign(LEFT, CENTER);
-  text("Post-disparo (" + nf(DIANA_POST_SEG * 1000, 1, 0) + " ms)", legX + 26, legDY + 1);
+  noStroke(); fill(color(80, 255, 130)); rect(legX, legDY - 1, 20, 3, 1);
+  fill(color(80, 255, 130)); textAlign(LEFT, CENTER);
+  text("Post-disparo (100 ms)", legX + 26, legDY + 1);
   legDY += 18;
   fill(COL_SHOT); noStroke(); ellipse(legX + 10, legDY, 10, 10);
   fill(COL_SHOT); textAlign(LEFT, CENTER);
