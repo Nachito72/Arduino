@@ -14,8 +14,9 @@
 //  SALIDA SERIAL:
 //    "Ready"
 //    "ARMED" / "DISARMED"
-//    ms,qw,qx,qy,qz,filteredElev,shot   (cuando armado, 100 Hz)
-//    shot=1 en la trama del disparo, 0 el resto
+//    ms,qw,qx,qy,qz,filteredElev,filteredYaw,shot   (cuando armado, 100 Hz)
+//    filteredYaw = heading 0-360° con filtro complementario gyro+Euler
+//    shot = 0 sin disparo, o volumen ADC del disparo
 //
 //  INSTRUCCIONES:
 //    1. Sube primero Giga_M4_Mic.ino al M4 (Tools → Board → Giga M4)
@@ -48,9 +49,10 @@ Adafruit_BNO055 bno = Adafruit_BNO055();  // 0x28 si ADR=GND, 0x29 si ADR=VCC
 // Giga R1 (Mbed OS) no tiene EEPROM — calibración automática en cada arranque
 
 // ===================== DISPAROS =====================
-// El M4 detecta el disparo y llama a shotDetected() vía RPC.
-// M7 recibe la llamada y pone este flag.
-volatile bool shotPending = false;
+// El M4 detecta el disparo y llama a shotDetected(vol) vía RPC.
+// M7 recibe la llamada y guarda el volumen (rango ADC) del disparo.
+volatile bool shotPending  = false;
+volatile int  shotVolume   = 0;
 
 // ===================== ARME POR INCLINACIÓN =====================
 // Mismos rangos que MovSoloPlanoDisparoMaxi
@@ -84,6 +86,13 @@ const float FILTER_ALPHA = 0.95f;
 float filteredElev = 0.0f;
 bool  filtElevInit = false;
 
+// ===================== FILTRO COMPLEMENTARIO YAW =====================
+// Igual que filteredElev pero para el heading (0-360°).
+// eulerVec.x() = heading BNO055 (resolución 1/16° = 0.0625°)
+// gyroVec.z()  = velocidad angular en yaw (°/s, alta resolución)
+float filteredYaw = 0.0f;
+bool  filtYawInit = false;
+
 // ===================== SHOT FLAG =====================
 // En lugar de enviar "SHOT,MECH", se añade 0/1 como último campo CSV.
 bool shotThisFrame = false;
@@ -113,6 +122,7 @@ bool reinitBNO() {
   }
   bno.setExtCrystalUse(true);
   filtElevInit    = false;
+  filtYawInit     = false;
   bnoWarmupEndMs  = millis() + 1000; // esperar 1s antes de contar errores de fusión
   Serial.println("// BNO055: reinit OK");
   return true;
@@ -120,8 +130,10 @@ bool reinitBNO() {
 
 // ================================================================
 // RPC: función que el M4 llama cuando detecta un disparo
+// Recibe el volumen (rango ADC) del disparo
 // ================================================================
-int onShotDetected() {
+int onShotDetected(int vol) {
+  shotVolume  = vol;
   shotPending = true;
   return 1;
 }
@@ -222,8 +234,8 @@ void loop() {
 
   // --- 1) Procesar disparo detectado por M4 ---
   if (shotPending) {
-    shotPending   = false;
-    shotThisFrame = true;   // se enviará como campo =1 en la próxima trama IMU
+    shotPending     = false;
+    shotThisFrame   = true;   // se enviará como campo de volumen en la próxima trama IMU
     startShotBlink(nowMs);
   }
 
@@ -277,18 +289,36 @@ void loop() {
       else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.x() * dtSeg)
                         + (1.0f - FILTER_ALPHA) * eulerRollAbs;
 
+      // Filtro complementario YAW: combina gyro.z() (suave) con euler.x() (ancla absoluta)
+      // Se maneja el wrap-around 0/360° por el método de error de camino más corto.
+      float eulerYawAbs = (float)eulerVec.x();
+      if (!filtYawInit) { filteredYaw = eulerYawAbs; filtYawInit = true; }
+      else {
+        float yawPred = filteredYaw + (float)gyroVec.z() * dtSeg;
+        while (yawPred >= 360.0f) yawPred -= 360.0f;
+        while (yawPred <    0.0f) yawPred += 360.0f;
+        float yawErr  = eulerYawAbs - yawPred;
+        while (yawErr >  180.0f) yawErr -= 360.0f;
+        while (yawErr < -180.0f) yawErr += 360.0f;
+        filteredYaw = yawPred + (1.0f - FILTER_ALPHA) * yawErr;
+        while (filteredYaw >= 360.0f) filteredYaw -= 360.0f;
+        while (filteredYaw <    0.0f) filteredYaw += 360.0f;
+      }
+
       if (armed) {
         // Formato: ms,qw,qx,qy,qz,filteredElev,shot
-        // shot = 1 en la trama en que se detectó el disparo, 0 el resto
-        uint8_t shotBit = shotThisFrame ? 1 : 0;
+        // shot = 0 sin disparo, o el volumen (rango ADC) del disparo
+        int shotVal = shotThisFrame ? shotVolume : 0;
         shotThisFrame = false;
+        if (shotVal > 0) shotVolume = 0;  // reset para el siguiente disparo
         Serial.print(nowMs);        Serial.print(",");
         Serial.print(qw, 6);        Serial.print(",");
         Serial.print(qx, 6);        Serial.print(",");
         Serial.print(qy, 6);        Serial.print(",");
         Serial.print(qz, 6);        Serial.print(",");
         Serial.print(filteredElev, 4); Serial.print(",");
-        Serial.println(shotBit);
+        Serial.print(filteredYaw,  4); Serial.print(",");
+        Serial.println(shotVal);
       }
     }
   }

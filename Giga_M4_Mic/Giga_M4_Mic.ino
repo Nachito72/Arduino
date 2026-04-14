@@ -94,10 +94,10 @@ void resetMicCandidate() {
 }
 
 // ================================================================
-// micUpdate — algoritmo idéntico al original
+// micUpdate — devuelve el volumen del disparo (range ADC) o 0 si no hay disparo
 // ================================================================
-bool micUpdate(uint16_t raw, uint32_t nowMs) {
-  if (lastShotMs != 0 && (nowMs - lastShotMs) < COOLDOWN_MS) return false;
+uint16_t micUpdate(uint16_t raw, uint32_t nowMs) {
+  if (lastShotMs != 0 && (nowMs - lastShotMs) < COOLDOWN_MS) return 0;
 
   int16_t  centered = (int16_t)raw - micCenter;
   uint16_t mag      = u16abs(centered);
@@ -114,7 +114,7 @@ bool micUpdate(uint16_t raw, uint32_t nowMs) {
       candCount = 0;
       resetStats(raw, mag, thrOff);
     }
-    return false;
+    return 0;
   }
 
   candCount++;
@@ -126,14 +126,14 @@ bool micUpdate(uint16_t raw, uint32_t nowMs) {
   uint16_t range = maxRawSeen - minRawSeen;
   if (range >= RANGE_MIN) {
     resetMicCandidate();
-    return true;   // DISPARO
+    return range;   // DISPARO — devuelve volumen (rango ADC)
   }
 
   if (candCount >= CONFIRM_SAMPLES) {
     candidate = false;
   }
 
-  return false;
+  return 0;
 }
 
 // ================================================================
@@ -185,10 +185,10 @@ void loop() {
 
     // Detector siempre activo — M7 decide si usa el disparo según su estado de arme.
     // M4 no necesita conocer el estado de arme: los dos cores son independientes.
-    bool shot = micUpdate(raw, nowMs);
-    if (shot) {
+    uint16_t vol = micUpdate(raw, nowMs);
+    if (vol > 0) {
       lastShotMs = nowMs;
-      RPC.call("shotDetected");
+      RPC.call("shotDetected", (int)vol);  // envía volumen (rango ADC)
     }
 
     nextMicUs += MIC_TICK_US;

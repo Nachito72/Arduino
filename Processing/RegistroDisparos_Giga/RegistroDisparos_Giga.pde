@@ -31,10 +31,10 @@ long        ultimoPitidoAmbosMs = 0;
 
 // ===================== CONFIGURACION =====================
 // Windows:
-final String PUERTO   = "COM9";
+//final String PUERTO   = "COM9";
 
 // Mac:
-//String PUERTO = "/dev/cu.usbmodem14101";
+final String PUERTO = "/dev/cu.usbmodem3101";
 
 // Linux:
 //final String PUERTO   = "/dev/ttyACM0";
@@ -63,6 +63,31 @@ float DIANA_POST_SEG = 0.100;
 // Ventana de suavizado de curvas en pantalla (muestras; 1 = sin suavizado)
 final int SMOOTH_N = 7;
 boolean suavizadoActivo = false;
+
+// ===================== CALIBRACIÓN ELEVACIÓN POR DISPARO =====================
+// Haz clic en un disparo de la gráfica de elevación con Cal.elev activo:
+// introduce la distancia a la diana (m) y la altura medida en ella (mm).
+boolean calibElevActivo = false;
+float   rollRefElev     = Float.NaN; // ángulo (°) del disparo de referencia
+float   calHeightMm     = 0;         // altura medida en diana (mm)
+float   distanciaDiana  = 10000;     // distancia al blanco (mm), default 10 m
+// Transformación de display (actualizados por updateElevCalib()):
+float   elevScale       = 1.0;       // 1.0=grados, D*PI/180=mm/° cuando calibrado
+float   elevOffset      = 0;         // offset en unidades de display
+
+void updateElevCalib() {
+  if (calibElevActivo && !Float.isNaN(rollRefElev)) {
+    elevScale  = (float)(distanciaDiana * Math.PI / 180.0);
+    elevOffset = calHeightMm - rollRefElev * elevScale;
+  } else {
+    elevScale  = 1.0;
+    elevOffset = 0.0;
+  }
+}
+
+String elevUnidad() {
+  return (calibElevActivo && !Float.isNaN(rollRefElev)) ? "mm" : "°";
+}
 
 void verificarRuta() {
   println("📁 Guardando datos en: " + DIR_BASE);
@@ -96,6 +121,11 @@ CopyOnWriteArrayList<String>    listaValores     = new CopyOnWriteArrayList<Stri
 int                  listaSeleccion   = -1;
 int                  listaScroll      = 0;
 int                  listaDeleteConfirm = -1;
+
+// ===================== FILTRO VOLUMEN DISPARO =====================
+// Solo se registran/muestran los disparos cuyo volumen (rango ADC) >= este umbral.
+// Con el firmware antiguo (shot=0/1) todos los disparos tienen volumen=1 y siempre pasan.
+int SHOT_VOL_MIN = 0;   // 0 = sin filtro; subir para ignorar disparos lejanos
 
 // ===================== MODO COMPARACIÓN =====================
 boolean modoComparar = false;
@@ -156,6 +186,9 @@ float ZOOM_MARGIN = 2.0;
 float tZoomMin = 0;
 float tZoomMax = -1;
 float cursorTSeg = -1;
+// Coordenadas del gráfico de elevación (para detectar clics de calibración):
+int   grafElev_ax = 0, grafElev_ay = 0, grafElev_aw = 0, grafElev_ah = 0;
+float grafElev_tMin = 0, grafElev_tMax = 10;
 
 int btnZoomX, btnZoomY, btnZoomW = 110, btnZoomH = 20;
 boolean zoomDisparoActivo = false;
@@ -257,7 +290,10 @@ void serialEvent(Serial p) {
   if (linea.equals("Ready") || linea.startsWith("//")) return;
 
   String[] t = split(linea, ',');
-  if (t.length != 7) return;
+  // Formato nuevo (v1.6+): 8 campos  ms,qw,qx,qy,qz,filteredElev,filteredYaw,shot
+  // Formato viejo (v1.5-):  7 campos  ms,qw,qx,qy,qz,filteredElev,shot
+  if (t.length != 7 && t.length != 8) return;
+  boolean nuevoFormato = (t.length == 8);  // tiene filteredYaw en t[6], shot en t[7]
 
   if (grabando) {
     // Calcular tSeg a partir del timestamp Arduino
@@ -267,19 +303,23 @@ void serialEvent(Serial p) {
     if (ms0Sesion < 0) ms0Sesion = arduinoMs;
     float tSeg = (arduinoMs - ms0Sesion) / 1000.0;
 
-    boolean esDisparo = t[6].trim().equals("1");
+    boolean esDisparo = false;
+    int     shotVol   = 0;
+    int     shotIdx   = nuevoFormato ? 7 : 6;  // índice del campo shot
+    try { shotVol = Integer.parseInt(t[shotIdx].trim()); } catch (Exception e) {}
+    esDisparo = shotVol > 0;
 
-    // Guardar trama en buffer CSV: tSeg + los 7 campos Giga
-    String[] fila = new String[8];
+    // Guardar trama en buffer CSV: tSeg + todos los campos Arduino
+    String[] fila = new String[t.length + 1];
     fila[0] = String.format(java.util.Locale.US, "%.4f", tSeg);
-    for (int i = 0; i < 7; i++) fila[i + 1] = t[i];
+    for (int i = 0; i < t.length; i++) fila[i + 1] = t[i];
     bufferSesion.add(fila);
 
-    // Disparo detectado por el firmware
-    if (esDisparo) {
+    // Disparo detectado por el firmware — filtrar por volumen mínimo
+    if (esDisparo && shotVol >= SHOT_VOL_MIN) {
       shotCount++;
       shotPendiente = true;
-      grafShots.add(new float[]{ tSeg });
+      grafShots.add(new float[]{ tSeg, (float)shotVol });
     }
 
     // Actualizar gráficas en vivo
@@ -290,16 +330,23 @@ void serialEvent(Serial p) {
       double qz = Double.parseDouble(t[4].trim());
       float filteredElev = Float.parseFloat(t[5].trim());
 
-      // Calcular pitch lateral y yaw desde cuaternión
+      // Calcular pitch lateral desde cuaternión (necesario para yawRef y yawFalseado)
       final double R2D = 57.29577951;
       double sinp = 2.0*(qw*qy - qz*qx);
       double pitchDeg = (Math.abs(sinp) >= 1.0) ? (sinp >= 0 ? 90.0 : -90.0) : Math.asin(sinp) * R2D;
-      double siny = 2.0*(qw*qz + qx*qy);
-      double cosy = 1.0 - 2.0*(qy*qy + qz*qz);
-      double yawRaw = Math.atan2(siny, cosy) * R2D;
-      if (yawRaw < 0) yawRaw += 360.0;
-
       float pitchLat = (float)pitchDeg;
+
+      // YAW: usar filteredYaw del firmware si disponible (más preciso, sin escalón 1/16°)
+      // Si no, calcular desde cuaternión como antes
+      double yawRaw;
+      if (nuevoFormato) {
+        yawRaw = Double.parseDouble(t[6].trim());  // filteredYaw: 0-360°
+      } else {
+        double siny = 2.0*(qw*qz + qx*qy);
+        double cosy = 1.0 - 2.0*(qy*qy + qz*qz);
+        yawRaw = Math.atan2(siny, cosy) * R2D;
+        if (yawRaw < 0) yawRaw += 360.0;
+      }
 
       // Referencia de rumbo: capturar la primera vez que pitch entra en rango
       if ((Double.isNaN(yawRef) || yawRef == 0) && pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX) {
@@ -377,6 +424,9 @@ void iniciarSesion() {
   grafYaw.clear();
   grafShots.clear();
   yawRef = Double.NaN;
+  rollRefElev = Float.NaN;
+  calHeightMm = 0;
+  updateElevCalib();
   estabBufIdx          = 0;
   estabBufCount        = 0;
   estableRoll          = false;
@@ -437,8 +487,8 @@ void finalizarSesion() {
   PrintWriter pw = createWriter(rutaFichero);
   pw.println("# Sesion:" + numSesionDia + " Fecha:" + fechaHoraInicio +
              " Shots:" + shotCount + " Duracion:" + nf(durSeg, 1, 2) + "s");
-  // Cabecera de columnas: tSeg (calculado) + 7 campos Giga
-  pw.println("tSeg,ms,qw,qx,qy,qz,filteredElev,shot");
+  // Cabecera de columnas: tSeg (calculado) + 8 campos Giga (con filteredYaw)
+  pw.println("tSeg,ms,qw,qx,qy,qz,filteredElev,filteredYaw,shot");
   for (String[] fila : bufferSesion) pw.println(join(fila, ","));
   pw.flush(); pw.close();
 
@@ -563,12 +613,13 @@ void cargarReproduccion(String ruta) {
       if (linea.startsWith("tSeg")) continue;  // cabecera de columnas
       String[] t = split(linea, ',');
 
+      boolean formatoGigaV2  = (t.length == 9 && !t[1].trim().equals("SHOT"));  // nuevo: con filteredYaw
       boolean formatoGiga     = (t.length == 8 && !t[1].trim().equals("SHOT"));
       boolean formatoFiltrado = (t.length == 6 && !t[1].trim().equals("SHOT"));
       boolean formatoNuevo    = (t.length == 5 && !t[1].trim().equals("SHOT"));
       boolean formatoAntiguo  = (t.length >= 22);
 
-      if (!formatoGiga && !formatoFiltrado && !formatoNuevo && !formatoAntiguo) {
+      if (!formatoGigaV2 && !formatoGiga && !formatoFiltrado && !formatoNuevo && !formatoAntiguo) {
         // Línea de disparo legacy: tSeg,SHOT
         if (t.length == 2 && t[1].trim().equals("SHOT")) {
           float tShot = Float.parseFloat(t[0].trim().replace(',', '.'));
@@ -582,8 +633,22 @@ void cargarReproduccion(String ruta) {
       double roll, yawRaw;
       float pitchLat;
 
-      if (formatoGiga) {
-        // t: tSeg, ms, qw, qx, qy, qz, filteredElev, shot
+      if (formatoGigaV2) {
+        // t: tSeg, ms, qw, qx, qy, qz, filteredElev, filteredYaw, shot
+        double qw = Double.parseDouble(t[2].trim());
+        double qx = Double.parseDouble(t[3].trim());
+        double qy = Double.parseDouble(t[4].trim());
+        double qz = Double.parseDouble(t[5].trim());
+        roll = Double.parseDouble(t[6].trim());  // filteredElev
+        yawRaw = Double.parseDouble(t[7].trim()); // filteredYaw (0-360°, alta resolución)
+        final double R2D = 57.29577951;
+        double sinp = 2.0*(qw*qy - qz*qx);
+        pitchLat = (float)((Math.abs(sinp) >= 1.0) ? (sinp >= 0 ? 90.0 : -90.0) : Math.asin(sinp) * R2D);
+        int shotV = 0;
+        try { shotV = Integer.parseInt(t[8].trim()); } catch (Exception e) {}
+        if (shotV > 0 && shotV >= SHOT_VOL_MIN) grafShots.add(new float[]{ tSeg, (float)shotV });
+      } else if (formatoGiga) {
+        // t: tSeg, ms, qw, qx, qy, qz, filteredElev, shot (formato anterior sin filteredYaw)
         double qw = Double.parseDouble(t[2].trim());
         double qx = Double.parseDouble(t[3].trim());
         double qy = Double.parseDouble(t[4].trim());
@@ -596,8 +661,10 @@ void cargarReproduccion(String ruta) {
         double cosy = 1.0 - 2.0*(qy*qy + qz*qz);
         yawRaw = Math.atan2(siny, cosy) * R2D;
         if (yawRaw < 0) yawRaw += 360.0;
-        // Disparo incrustado en campo shot
-        if (t[7].trim().equals("1")) grafShots.add(new float[]{ tSeg });
+        // Disparo incrustado en campo shot — puede ser 0 o volumen ADC
+        int shotV = 0;
+        try { shotV = Integer.parseInt(t[7].trim()); } catch (Exception e) {}
+        if (shotV > 0 && shotV >= SHOT_VOL_MIN) grafShots.add(new float[]{ tSeg, (float)shotV });
       } else if (formatoFiltrado) {
         // t: tSeg, qw, qx, qy, qz, filteredElev
         double qw = Double.parseDouble(t[1].trim());
@@ -649,10 +716,10 @@ void cargarReproduccion(String ruta) {
         while (yawRel < -180) yawRel += 360;
       }
 
-      // Para Giga y formatoFiltrado: roll ya tiene offset aplicado.
+      // Para GigaV2, Giga y formatoFiltrado: roll ya tiene offset aplicado.
       // Para formatoNuevo: aplicar ROLL_OFFSET (comportamiento heredado).
       float rollStored;
-      if (formatoGiga || formatoFiltrado) {
+      if (formatoGigaV2 || formatoGiga || formatoFiltrado) {
         rollStored = (float)roll;
       } else if (formatoAntiguo) {
         rollStored = (float)roll;  // formato antiguo: roll ya es valor real
@@ -666,6 +733,10 @@ void cargarReproduccion(String ruta) {
   } catch (Exception e) { println("Error leyendo: " + e.getMessage()); }
 
   repTitulo = titulo;
+  // La calibración de elevación se mantiene al cambiar de sesión —
+  // la referencia es del arma, no de la sesión. Solo se resetea al
+  // desactivar Cal.elev o al iniciar una nueva sesión de grabación.
+  updateElevCalib();
   tZoomMin = 0;    tZoomMax = -1;
   zoomMin[0] = -90;  zoomMax[0] = 90;   zoomLocked[0] = false;
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
@@ -717,12 +788,13 @@ void cargarEnSlot(int slot, String ruta) {
       if (linea.startsWith("tSeg")) continue;
       String[] t = split(linea, ',');
 
+      boolean formatoGigaV2  = (t.length == 9 && !t[1].trim().equals("SHOT"));  // nuevo: con filteredYaw
       boolean formatoGiga     = (t.length == 8 && !t[1].trim().equals("SHOT"));
       boolean formatoFiltrado = (t.length == 6 && !t[1].trim().equals("SHOT"));
       boolean formatoNuevo   = (t.length == 5 && !t[1].trim().equals("SHOT"));
       boolean formatoAntiguo = (t.length >= 22);
 
-      if (!formatoGiga && !formatoFiltrado && !formatoNuevo && !formatoAntiguo) {
+      if (!formatoGigaV2 && !formatoGiga && !formatoFiltrado && !formatoNuevo && !formatoAntiguo) {
         if (t.length == 2 && t[1].trim().equals("SHOT")) {
           float tShot = Float.parseFloat(t[0].trim().replace(',', '.'));
           compShots[slot].add(new float[]{ tShot });
@@ -734,7 +806,21 @@ void cargarEnSlot(int slot, String ruta) {
       double roll, yawRaw;
       float pitchLat;
 
-      if (formatoGiga) {
+      if (formatoGigaV2) {
+        // t: tSeg, ms, qw, qx, qy, qz, filteredElev, filteredYaw, shot
+        double qw = Double.parseDouble(t[2].trim());
+        double qx = Double.parseDouble(t[3].trim());
+        double qy = Double.parseDouble(t[4].trim());
+        double qz = Double.parseDouble(t[5].trim());
+        roll = Double.parseDouble(t[6].trim());
+        yawRaw = Double.parseDouble(t[7].trim()); // filteredYaw (0-360°, alta resolución)
+        final double R2D = 57.29577951;
+        double sinp = 2.0*(qw*qy - qz*qx);
+        pitchLat = (float)((Math.abs(sinp) >= 1.0) ? (sinp >= 0 ? 90.0 : -90.0) : Math.asin(sinp) * R2D);
+        int shotV = 0;
+        try { shotV = Integer.parseInt(t[8].trim()); } catch (Exception e) {}
+        if (shotV > 0 && shotV >= SHOT_VOL_MIN) compShots[slot].add(new float[]{ tSeg, (float)shotV });
+      } else if (formatoGiga) {
         double qw = Double.parseDouble(t[2].trim());
         double qx = Double.parseDouble(t[3].trim());
         double qy = Double.parseDouble(t[4].trim());
@@ -747,7 +833,9 @@ void cargarEnSlot(int slot, String ruta) {
         double cosy = 1.0 - 2.0*(qy*qy + qz*qz);
         yawRaw = Math.atan2(siny, cosy) * R2D;
         if (yawRaw < 0) yawRaw += 360.0;
-        if (t[7].trim().equals("1")) compShots[slot].add(new float[]{ tSeg });
+        int shotV = 0;
+        try { shotV = Integer.parseInt(t[7].trim()); } catch (Exception e) {}
+        if (shotV > 0 && shotV >= SHOT_VOL_MIN) compShots[slot].add(new float[]{ tSeg, (float)shotV });
       } else if (formatoFiltrado) {
         double qw = Double.parseDouble(t[1].trim());
         double qx = Double.parseDouble(t[2].trim());
@@ -795,7 +883,7 @@ void cargarEnSlot(int slot, String ruta) {
       }
 
       float rollStored;
-      if (formatoGiga || formatoFiltrado) {
+      if (formatoGigaV2 || formatoGiga || formatoFiltrado) {
         rollStored = (float)roll;
       } else if (formatoAntiguo) {
         rollStored = (float)roll;
@@ -989,7 +1077,20 @@ void dibujarLista() {
   fill(COL_TEXT); textFont(fontUI); textSize(12); textAlign(LEFT, TOP);
   text("Suaviz.", cbX3 + cbW + 4, cbY3);
 
-  int topBarH = 34;
+  int cbX4 = cbX3 + 60, cbY4 = cbY;
+  noFill(); stroke(calibElevActivo ? color(0,200,80) : COL_BORDE); rect(cbX4, cbY4, cbW, cbH, 2);
+  if (calibElevActivo) { fill(color(0,200,80)); noStroke(); rect(cbX4+2, cbY4+2, cbW-4, cbH-4, 1); }
+  fill(calibElevActivo ? color(0,220,100) : COL_TEXT); textFont(fontUI); textSize(12); textAlign(LEFT, TOP);
+  text("Cal.elev", cbX4 + cbW + 4, cbY4);
+  if (calibElevActivo) {
+    String calInfo = Float.isNaN(rollRefElev) ? "\u2190 clic en un disparo para calibrar" :
+      "ref: " + nf(calHeightMm, 1, 0) + " mm  @  " + nf(distanciaDiana/1000.0, 1, 1) + " m";
+    fill(!Float.isNaN(rollRefElev) ? color(0,220,100) : color(200,180,0));
+    textFont(fontUI); textSize(11); textAlign(LEFT, TOP);
+    text(calInfo, lx + 8, cbY4 + cbH + 3);
+  }
+
+  int topBarH = calibElevActivo ? 48 : 34;
   int startY = ly + topBarH;
   int visibles = (lh - topBarH) / itemH;
 
@@ -1250,6 +1351,10 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
                     color c, float vMin, float vMax,
                     float tVisMin, float tVisMax,
                     boolean showShots, int grafIdx) {
+  // La gráfica siempre en grados; mm solo como etiqueta informativa en disparos
+  float dispA = 1.0;
+  float dispB = 0.0;
+  String unidad = "°";
 
   fill(22); stroke(COL_BORDE); strokeWeight(1);
   rect(gx, gy - GRAF_PAD_T, gw, gh + GRAF_PAD_T + GRAF_PAD_B, 4);
@@ -1273,6 +1378,11 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
   int ay = gy;
   int aw = gw - GRAF_PAD_L - GRAF_PAD_R;
   int ah = gh;
+  if (grafIdx == 0) {
+    grafElev_ax = ax; grafElev_ay = ay;
+    grafElev_aw = aw; grafElev_ah = ah;
+    grafElev_tMin = tVisMin; grafElev_tMax = tVisMax;
+  }
 
   fill(15); noStroke();
   rect(ax, ay, aw, ah);
@@ -1333,7 +1443,7 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
   for (float[] punto : datos) {
     if (punto[0] < tVisMin - pasoT || punto[0] > tVisMax + pasoT) continue;
     float xP = ax + map(punto[0], tVisMin, tVisMax, 0, aw);
-    float yP = ay + ah - map(constrain(punto[1], vMin, vMax), vMin, vMax, 0, ah);
+    float yP = ay + ah - map(constrain(punto[1] * dispA + dispB, vMin, vMax), vMin, vMax, 0, ah);
     ptsVis.add(new float[]{ xP, yP });
   }
   ptsVis = suavizar(ptsVis, suavizadoActivo ? SMOOTH_N : 1);
@@ -1358,6 +1468,11 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
       line(xSh, ay, xSh, ay + ah);
       fill(COL_SHOT); noStroke();
       triangle(xSh - 5, ay, xSh + 5, ay, xSh, ay + 10);
+      // Mostrar volumen si disponible (sh[1] > 0)
+      if (sh.length >= 2 && sh[1] > 0) {
+        fill(COL_SHOT); textFont(fontMono); textSize(10); textAlign(CENTER, BOTTOM);
+        text("vol:" + (int)sh[1], xSh, ay - 1);
+      }
     }
   }
 
@@ -1375,6 +1490,18 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
         float ySh = ay + ah - map(constrain(valSh, vMin, vMax), vMin, vMax, 0, ah);
         fill(COL_SHOT); stroke(255); strokeWeight(1.5);
         ellipse(xSh, ySh, 10, 10);
+        // Etiqueta: grados siempre; mm adicional si hay calibración activa
+        boolean arriba = (ySh - ay > 16);
+        if (grafIdx == 0 && calibElevActivo && !Float.isNaN(rollRefElev)) {
+          float valMm = valSh * elevScale + elevOffset;
+          String lblMm = (valMm >= 0 ? "+" : "") + nf(valMm, 1, 1) + " mm  (" + nf(valSh, 1, 4) + "\u00b0)";
+          fill(color(0, 220, 100)); noStroke(); textFont(fontMono); textSize(12); textAlign(LEFT, arriba ? BOTTOM : TOP);
+          text(lblMm, xSh + 7, arriba ? ySh - 2 : ySh + 2);
+        } else {
+          String lblDeg = nf(valSh, 1, 4) + "\u00b0";
+          fill(255); noStroke(); textFont(fontMono); textSize(11); textAlign(LEFT, arriba ? BOTTOM : TOP);
+          text(lblDeg, xSh + 7, arriba ? ySh - 2 : ySh + 2);
+        }
       }
     }
   }
@@ -1394,10 +1521,18 @@ void dibujarGrafica(int gx, int gy, int gw, int gh,
       float yCur = ay + ah - map(constrain(valCur, vMin, vMax), vMin, vMax, 0, ah);
       fill(255); noStroke();
       ellipse(xCur, yCur, 6, 6);
+      String cursorLbl;
+      if (grafIdx == 0 && calibElevActivo && !Float.isNaN(rollRefElev)) {
+        float valMm = valCur * elevScale + elevOffset;
+        cursorLbl = nf(cursorTSeg, 1, 2) + "s  " + nf(valCur, 1, 2) + "°  (" + (valMm >= 0 ? "+" : "") + nf(valMm, 1, 0) + "mm)";
+      } else {
+        cursorLbl = nf(cursorTSeg, 1, 2) + "s  " + nf(valCur, 1, 4) + "°";
+      }
+      int cursorBoxW = (grafIdx == 0 && calibElevActivo && !Float.isNaN(rollRefElev)) ? 130 : 70;
       fill(30); stroke(c); strokeWeight(1);
-      rect(xCur + 5, yCur - 10, 70, 14, 3);
+      rect(xCur + 5, yCur - 10, cursorBoxW, 14, 3);
       fill(c); noStroke(); textFont(fontMono); textSize(11); textAlign(LEFT, CENTER);
-      text(nf(cursorTSeg, 1, 2) + "s  " + nf(valCur, 1, 4) + "°", xCur + 8, yCur - 3);
+      text(cursorLbl, xCur + 8, yCur - 3);
     }
   }
 }
@@ -1722,13 +1857,81 @@ void applyZoomDisparo() {
   zoomDisparoActivo = true;
 }
 
+// Recarga los disparos de la sesión/reproducción actual aplicando el filtro SHOT_VOL_MIN.
+// Para la sesión activa: rebarre el bufferSesion. Para reproducción: recarga el fichero.
+void recargarConFiltro() {
+  if (grabando) {
+    // Refiltra grafShots desde el bufferSesion en memoria
+    // El campo shot es siempre el último de cada fila (compatible con formato 8 y 9 cols)
+    grafShots.clear();
+    shotCount = 0;
+    for (String[] fila : bufferSesion) {
+      if (fila.length < 8) continue;
+      int vol = 0;
+      try { vol = Integer.parseInt(fila[fila.length - 1].trim()); } catch (Exception e) {}
+      if (vol > 0 && vol >= SHOT_VOL_MIN) {
+        float tSeg = Float.parseFloat(fila[0].trim());
+        grafShots.add(new float[]{ tSeg, (float)vol });
+        shotCount++;
+      }
+    }
+  } else if (listaSeleccion >= 0 && listaSeleccion < listaRutas.size()) {
+    // Recargar reproducción con el nuevo filtro (también recalcula rollRefElev)
+    cargarReproduccion(listaRutas.get(listaSeleccion));
+    return;
+  }
+  // Calibración se mantiene del clic previo del usuario
+  updateElevCalib();
+  // Recargar slots de comparación
+  if (modoComparar) {
+    for (int s = 0; s < comparaIdx.size(); s++) {
+      int ci = comparaIdx.get(s);
+      if (ci < listaRutas.size()) cargarEnSlot(s, listaRutas.get(ci));
+    }
+  }
+}
+
 void dibujarInfoSesion() {
   int ix = COMBO_X + COMBO_W + 10;
   int iy = 8;
   int ih = 20;
   int primerBoton = modoComparar ? min(btnDianaX, btnAlinearX) : btnDianaX;
-  int iw = primerBoton - ix - 8;
 
+  // ── Panel filtro de volumen (pegado a los botones de la derecha) ──────
+  int volPanelW = 160;
+  int volPanelX = primerBoton - volPanelW - 8;
+  int btnVolH   = ih;
+  int btnVolW   = 20;
+
+  // Botón −
+  int btnMinusX = volPanelX;
+  boolean hoverMinus = mouseX >= btnMinusX && mouseX <= btnMinusX + btnVolW &&
+                       mouseY >= iy && mouseY <= iy + btnVolH;
+  fill(hoverMinus ? color(180, 60, 60) : color(80, 35, 35)); noStroke();
+  rect(btnMinusX, iy, btnVolW, btnVolH, 3);
+  fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
+  text("−", btnMinusX + btnVolW / 2, iy + btnVolH / 2);
+
+  // Texto volumen
+  int volLblX = btnMinusX + btnVolW + 2;
+  int volLblW = volPanelW - btnVolW * 2 - 4;
+  fill(30); stroke(COL_BORDE); strokeWeight(1);
+  rect(volLblX, iy, volLblW, btnVolH, 2);
+  fill(SHOT_VOL_MIN > 0 ? color(255, 180, 30) : COL_TEXTDIM);
+  textFont(fontMono); textSize(12); textAlign(CENTER, CENTER);
+  text("vol\u2265" + SHOT_VOL_MIN, volLblX + volLblW / 2, iy + btnVolH / 2);
+
+  // Botón +
+  int btnPlusX = volLblX + volLblW + 2;
+  boolean hoverPlus = mouseX >= btnPlusX && mouseX <= btnPlusX + btnVolW &&
+                      mouseY >= iy && mouseY <= iy + btnVolH;
+  fill(hoverPlus ? color(60, 180, 60) : color(30, 80, 30)); noStroke();
+  rect(btnPlusX, iy, btnVolW, btnVolH, 3);
+  fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
+  text("+", btnPlusX + btnVolW / 2, iy + btnVolH / 2);
+
+  // ── Barra de info principal ───────────────────────────────────────────
+  int iw = volPanelX - ix - 8;
   fill(35); stroke(COL_BORDE); strokeWeight(1);
   rect(ix, iy, iw, ih, 4);
 
@@ -1767,6 +1970,49 @@ void mousePressed() {
     return;
   }
 
+  // ── Calibración elevación: clic en disparo de la gráfica (solo si aún sin ref) ──
+  if (calibElevActivo && Float.isNaN(rollRefElev) && grafShots.size() > 0 &&
+      mouseX >= grafElev_ax && mouseX <= grafElev_ax + grafElev_aw &&
+      mouseY >= grafElev_ay && mouseY <= grafElev_ay + grafElev_ah) {
+    float tClick = map(mouseX, grafElev_ax, grafElev_ax + grafElev_aw, grafElev_tMin, grafElev_tMax);
+    float bestD = Float.MAX_VALUE;
+    float tNearest = -1;
+    for (float[] sh : grafShots) {
+      float d = abs(sh[0] - tClick);
+      if (d < bestD) { bestD = d; tNearest = sh[0]; }
+    }
+    if (tNearest >= 0) {
+      float refAngle = Float.NaN;
+      float angleD   = Float.MAX_VALUE;
+      for (float[] p : grafRoll) {
+        float d = abs(p[0] - tNearest);
+        if (d < angleD) { angleD = d; refAngle = p[1]; }
+      }
+      if (!Float.isNaN(refAngle)) {
+        Object distDef = String.valueOf((int)(distanciaDiana / 1000));
+        String inputDist = (String) javax.swing.JOptionPane.showInputDialog(
+          null, "Distancia a la diana (m):", "Calibrar elevación (1/2)",
+          javax.swing.JOptionPane.QUESTION_MESSAGE, null, null, distDef);
+        if (inputDist != null && !inputDist.trim().isEmpty()) {
+          String inputH = (String) javax.swing.JOptionPane.showInputDialog(
+            null, "Altura del disparo en diana (mm)\n+ = arriba del centro,  \u2212 = abajo",
+            "Calibrar elevación (2/2)",
+            javax.swing.JOptionPane.QUESTION_MESSAGE, null, null, String.valueOf((int)calHeightMm));
+          if (inputH != null && !inputH.trim().isEmpty()) {
+            try {
+              float newDist = Float.parseFloat(inputDist.trim().replace(",", ".")) * 1000;
+              if (newDist > 0) distanciaDiana = newDist;
+              calHeightMm = Float.parseFloat(inputH.trim().replace(",", "."));
+              rollRefElev = refAngle;
+              updateElevCalib();
+            } catch (Exception ex) { /* entrada inválida */ }
+          }
+        }
+      }
+    }
+    return;
+  }
+
   if (mouseX >= COMBO_X && mouseX <= COMBO_X + COMBO_W &&
       mouseY >= COMBO_Y && mouseY <= COMBO_Y + COMBO_H) {
     comboAbierto = !comboAbierto;
@@ -1792,6 +2038,30 @@ void mousePressed() {
       mouseY >= btnDianaY && mouseY <= btnDianaY + btnDianaH) {
     modoDiana = !modoDiana;
     return;
+  }
+
+  // ── Botones filtro de volumen (vol− / vol+) ───────────────────────────
+  {
+    int primerBoton = modoComparar ? min(btnDianaX, btnAlinearX) : btnDianaX;
+    int volPanelW = 160;
+    int volPanelX = primerBoton - volPanelW - 8;
+    int btnVolH = 20, btnVolW = 20, btnIy = 8;
+    int btnMinusX = volPanelX;
+    int volLblX   = btnMinusX + btnVolW + 2;
+    int volLblW   = volPanelW - btnVolW * 2 - 4;
+    int btnPlusX  = volLblX + volLblW + 2;
+    if (mouseY >= btnIy && mouseY <= btnIy + btnVolH) {
+      if (mouseX >= btnMinusX && mouseX <= btnMinusX + btnVolW) {
+        SHOT_VOL_MIN = max(0, SHOT_VOL_MIN - 50);
+        recargarConFiltro();
+        return;
+      }
+      if (mouseX >= btnPlusX && mouseX <= btnPlusX + btnVolW) {
+        SHOT_VOL_MIN += 50;
+        recargarConFiltro();
+        return;
+      }
+    }
   }
 
   int btnSndW = 100, btnSndH = 20;
@@ -1847,7 +2117,7 @@ void mousePressed() {
 
   if (mouseX < LISTA_W) {
     int ly   = HEADER_H;
-    int topBarH = 34;
+    int topBarH = calibElevActivo ? 48 : 34;
     int itemH   = 44;
     int startY  = ly + topBarH;
 
@@ -1872,6 +2142,14 @@ void mousePressed() {
     int cbX3 = cbX2 + 82, cbY3 = ly + 18;
     if (mouseX >= cbX3 && mouseX <= cbX3+cbW && mouseY >= cbY3 && mouseY <= cbY3+cbH) {
       suavizadoActivo = !suavizadoActivo;
+      return;
+    }
+
+    int cbX4 = cbX3 + 60, cbY4 = ly + 18;
+    if (mouseX >= cbX4 && mouseX <= cbX4+cbW && mouseY >= cbY4 && mouseY <= cbY4+cbH) {
+      calibElevActivo = !calibElevActivo;
+      if (!calibElevActivo) { rollRefElev = Float.NaN; calHeightMm = 0; }
+      updateElevCalib();
       return;
     }
 
