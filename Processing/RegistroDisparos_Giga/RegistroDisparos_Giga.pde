@@ -35,10 +35,10 @@ long        ultimoPitidoAmbosMs = 0;
 //final String PUERTO   = "COM9";
 
 // Mac:
-final String PUERTO = "/dev/cu.usbmodem3101";
+//final String PUERTO = "/dev/cu.usbmodem3101";
 
 // Linux:
-//final String PUERTO   = "/dev/ttyACM0";
+final String PUERTO   = "/dev/ttyACM0";
 
 final int    BAUDRATE = 500000;
 // Carpeta de grabaciones: relativa al sketch → funciona en Windows, Mac y Linux
