@@ -49,17 +49,10 @@ Adafruit_BNO055 bno = Adafruit_BNO055();  // 0x28 si ADR=GND, 0x29 si ADR=VCC
 // Giga R1 (Mbed OS) no tiene EEPROM — calibración automática en cada arranque
 
 // ===================== DISPAROS =====================
-<<<<<<< Updated upstream
-// El M4 detecta el disparo y llama a shotDetected(vol) vía RPC.
-// M7 recibe la llamada y guarda el volumen (rango ADC) del disparo.
-volatile bool shotPending  = false;
-volatile int  shotVolume   = 0;
-=======
 // El M4 detecta el disparo y llama a shotDetected(level) vía RPC.
 // M7 recibe la llamada y pone este flag + nivel acústico.
 volatile bool     shotPending       = false;
 volatile uint16_t shotAcousticLevel = 0;   // peakAbs enviado por el M4
->>>>>>> Stashed changes
 
 // ===================== ARME POR INCLINACIÓN =====================
 // Mismos rangos que MovSoloPlanoDisparoMaxi
@@ -113,7 +106,7 @@ uint16_t shotLevelSnapshot = 0;   // nivel capturado al consumir shotPending
 uint8_t  bnoErrCount    = 0;
 const uint8_t BNO_MAX_ERR = 50;
 uint32_t bnoWarmupEndMs = 0;  // no contar errores hasta que millis() >= este valor
-
+uint32_t shotVolume = 0;
 // ================================================================
 // Reinicio del BNO055 tras fallo I2C
 // ================================================================
@@ -140,15 +133,9 @@ bool reinitBNO() {
 // RPC: función que el M4 llama cuando detecta un disparo
 // Recibe el volumen (rango ADC) del disparo
 // ================================================================
-<<<<<<< Updated upstream
 int onShotDetected(int vol) {
   shotVolume  = vol;
   shotPending = true;
-=======
-int onShotDetected(int level) {
-  shotPending       = true;
-  shotAcousticLevel = (uint16_t)level;
->>>>>>> Stashed changes
   return 1;
 }
 
@@ -248,14 +235,9 @@ void loop() {
 
   // --- 1) Procesar disparo detectado por M4 ---
   if (shotPending) {
-<<<<<<< Updated upstream
     shotPending     = false;
     shotThisFrame   = true;   // se enviará como campo de volumen en la próxima trama IMU
-=======
-    shotPending        = false;
-    shotThisFrame      = true;
-    shotLevelSnapshot  = shotAcousticLevel;  // capturar antes de que llegue otro disparo
->>>>>>> Stashed changes
+
     startShotBlink(nowMs);
   }
 
@@ -326,16 +308,9 @@ void loop() {
       }
 
       if (armed) {
-<<<<<<< Updated upstream
         // Formato: ms,qw,qx,qy,qz,filteredElev,shot
         // shot = 0 sin disparo, o el volumen (rango ADC) del disparo
         int shotVal = shotThisFrame ? shotVolume : 0;
-=======
-        // Formato: ms,qw,qx,qy,qz,filteredElev,shot,shotLevel
-        // shot=1 y shotLevel=peakAbs en la trama del disparo, 0 el resto
-        uint8_t  shotBit   = shotThisFrame ? 1 : 0;
-        uint16_t shotLevel = shotThisFrame ? shotLevelSnapshot : 0;
->>>>>>> Stashed changes
         shotThisFrame = false;
         if (shotVal > 0) shotVolume = 0;  // reset para el siguiente disparo
         Serial.print(nowMs);        Serial.print(",");
@@ -344,13 +319,8 @@ void loop() {
         Serial.print(qy, 6);        Serial.print(",");
         Serial.print(qz, 6);        Serial.print(",");
         Serial.print(filteredElev, 4); Serial.print(",");
-<<<<<<< Updated upstream
         Serial.print(filteredYaw,  4); Serial.print(",");
         Serial.println(shotVal);
-=======
-        Serial.print(shotBit);      Serial.print(",");
-        Serial.println(shotLevel);
->>>>>>> Stashed changes
       }
     }
   }

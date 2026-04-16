@@ -12,7 +12,6 @@ import java.io.FileReader;
 import java.text.SimpleDateFormat;
 import javax.sound.sampled.*;
 
-
 // ===================== ESTABILIDAD DE ELEVACION =====================
 // Pitido cuando el eje de elevacion (roll corregido) se mantiene en +-0.5
 // durante al menos ESTAB_N muestras seguidas (~500 ms a 100 Hz)
@@ -61,7 +60,6 @@ float PRESHOT_SEG = 0.200;  // ← 200 ms por defecto
 float DIANA_PRE_SEG    = 0.200;  // ventana azul pre-disparo (y referencia del centro)
 float DIANA_POST_SEG   = 0.100;  // ventana verde post-disparo
 float DIANA_YELLOW_SEG = 3.000;  // ventana amarilla: antes de la ventana azul
-float DIANA_TAMANO_MM  = 170.0;  // lado de la diana cuadrada (mm) — 17×17 cm ISSF
 
 // Colores de las trazas de la diana (configurables)
 color DIANA_COL_PRE    = color( 80, 150, 255);  // azul:     DIANA_PRE_SEG antes del disparo
@@ -1692,17 +1690,16 @@ void dibujarDiana() {
   for (float[] p : grafYaw)  { float d = abs(p[0] - tShot); if (d < bestD) { bestD = d; yawShot  = p[1]; } }
 
   ArrayList<float[]> ventana = new ArrayList<float[]>();
+  float maxDev = 0.01;
   for (int i = 0; i < nPts; i++) {
     float t  = grafRoll.get(i)[0];
     if (t < tPre || t > tPost) continue;
     float dr = grafRoll.get(i)[1] - rollRef;
     float dy = grafYaw.get(i)[1]  - yawRef_d;
-    ventana.add(new float[]{ t, dr, dy });
-  }
-  // Escala fija: ángulo real que subtiende la mitad de la diana a la distancia configurada.
-  // Así 1 píxel = siempre el mismo ángulo independientemente del movimiento del tirador.
-  float dianaHalfDeg = (float)(Math.atan(DIANA_TAMANO_MM / 2.0 / distanciaDiana) * 180.0 / Math.PI);
-  float maxDev = max(dianaHalfDeg * 1.25f, 0.02f); // 25 % de margen más allá del borde
+      ventana.add(new float[]{ t, dr, dy });
+      maxDev = max(maxDev, abs(dr), abs(dy));
+    }
+  maxDev = max(maxDev * 1.3, 0.02);
 
   float drShot = rollShot - rollRef;
   float dyShot = yawShot  - yawRef_d;
@@ -1718,23 +1715,15 @@ void dibujarDiana() {
     color(18,  18, 32)
   };
   for (int i = nRings; i >= 1; i--) {
-    float ri   = r * (float) i / nRings;
-    float devI = maxDev * i / nRings;
-    float mmI  = (float)(Math.tan(devI * Math.PI / 180.0) * distanciaDiana);
+    float ri = r * (float) i / nRings;
     fill(ringCols[i - 1]); stroke(80); strokeWeight(1);
     ellipse(cx, cy, ri * 2, ri * 2);
+    float devI = maxDev * i / nRings;
     fill(140); textFont(fontMono); textSize(10); textAlign(LEFT, CENTER);
-    text(nf(mmI, 1, 0) + " mm", cx + ri + 4, cy);
+    text(nf(devI, 1, 3) + "°", cx + ri + 4, cy);
     fill(120); textFont(fontMono); textSize(10); textAlign(CENTER, CENTER);
     text(str(nRings + 5 - i), cx, cy - ri + 8);
   }
-  // Borde real de la diana cuadrada (DIANA_TAMANO_MM × DIANA_TAMANO_MM)
-  float dianaSqPx = r * (dianaHalfDeg / maxDev);
-  stroke(color(255, 210, 40)); strokeWeight(1.5); noFill();
-  rect(cx - dianaSqPx, cy - dianaSqPx, dianaSqPx * 2, dianaSqPx * 2, 2);
-  fill(color(255, 210, 40)); textFont(fontMono); textSize(9); textAlign(LEFT, TOP);
-  text(nf(DIANA_TAMANO_MM, 1, 0) + "\u00d7" + nf(DIANA_TAMANO_MM, 1, 0) + " mm",
-       cx + dianaSqPx + 4, cy - dianaSqPx);
 
   fill(255); noStroke(); ellipse(cx, cy, 5, 5);
 
@@ -1886,9 +1875,7 @@ void dibujarDiana() {
   text("Disparo  \u0394Yaw=" + nf(dyShot, 1, 3) + "\u00b0  \u0394Roll=" + nf(drShot, 1, 3) + "\u00b0", legX + 26, legDY);
   legDY += 18;
   fill(COL_TEXTDIM); textFont(fontMono); textSize(11); textAlign(LEFT, CENTER);
-  text("Diana " + nf(DIANA_TAMANO_MM, 1, 0) + "\u00d7" + nf(DIANA_TAMANO_MM, 1, 0) +
-       " mm @ " + nf(distanciaDiana / 1000.0, 1, 0) + " m  |  borde \u00b1" +
-       nf(dianaHalfDeg, 1, 3) + "\u00b0  |  " + ventana.size() + " muestras  |  t=" + nf(tShot, 1, 3) + "s", legX, legDY);
+  text("Escala: \u00b1" + nf(maxDev, 1, 3) + "\u00b0  |  " + ventana.size() + " muestras  |  t=" + nf(tShot, 1, 3) + "s", legX, legDY);
 }
 
 // ===================== INPUT VALOR DE IMPACTO =====================
