@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "1.6"
+#define VERSION_M7 "1.8"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -289,20 +289,23 @@ void loop() {
       else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.z() * dtSeg)
                         + (1.0f - FILTER_ALPHA) * eulerRollAbs;
 
-      // Filtro complementario YAW:
-      //   Deriva (giro horizontal) = rotación alrededor del eje vertical = -world_up
-      //   world_up = -chip_Y (chip Y apunta abajo) → yaw rate = gyro.y()
-      //   Ancla absoluta: euler.x() (heading BNO 0-360°, referenciado por gravedad)
-      float eulerYawAbs = (float)eulerVec.x();
-      if (!filtYawInit) { filteredYaw = eulerYawAbs; filtYawInit = true; }
+      // Integración pura de gyro para YAW (sin anchor euler.x()):
+      //   euler.x() del BNO en IMUPLUS cambia al elevar el arma (no tiene magnetómetro),
+      //   por lo que usarlo como anchor introduce exactamente el cruce que queremos evitar.
+      //   La integración pura es válida porque Processing usa yawRel = yawRaw - yawRef,
+      //   así que la deriva absoluta (≤1°/min típica) no afecta al análisis del disparo.
+      //   Se usan gravVec + gyro para calcular el yaw rate correcto a cualquier ángulo de elevación.
+      imu::Vector<3> gravVec = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+      float gLen = sqrtf(gravVec.x()*gravVec.x() + gravVec.y()*gravVec.y() + gravVec.z()*gravVec.z());
+      float yawRate;
+      if (gLen > 0.5f) {
+        yawRate = -(gyroVec.x()*gravVec.x() + gyroVec.y()*gravVec.y() + gyroVec.z()*gravVec.z()) / gLen;
+      } else {
+        yawRate = gyroVec.y();  // fallback si el acelerómetro falla
+      }
+      if (!filtYawInit) { filteredYaw = (float)eulerVec.x(); filtYawInit = true; }
       else {
-        float yawPred = filteredYaw + (float)gyroVec.y() * dtSeg;
-        while (yawPred >= 360.0f) yawPred -= 360.0f;
-        while (yawPred <    0.0f) yawPred += 360.0f;
-        float yawErr  = eulerYawAbs - yawPred;
-        while (yawErr >  180.0f) yawErr -= 360.0f;
-        while (yawErr < -180.0f) yawErr += 360.0f;
-        filteredYaw = yawPred + (1.0f - FILTER_ALPHA) * yawErr;
+        filteredYaw += yawRate * dtSeg;
         while (filteredYaw >= 360.0f) filteredYaw -= 360.0f;
         while (filteredYaw <    0.0f) filteredYaw += 360.0f;
       }
