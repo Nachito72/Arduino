@@ -12,9 +12,6 @@ import java.io.FileReader;
 import java.text.SimpleDateFormat;
 import javax.sound.sampled.*;
 
-// ===================== VERSIÓN =====================
-final String VERSION_PDE = "1.1";
-
 
 // ===================== ESTABILIDAD DE ELEVACION =====================
 // Pitido cuando el eje de elevacion (roll corregido) se mantiene en +-0.5
@@ -38,7 +35,7 @@ long        ultimoPitidoAmbosMs = 0;
 //final String PUERTO   = "COM9";
 
 // Mac:
-final String PUERTO = "/dev/cu.usbmodem3101";
+final String PUERTO = "/dev/cu.usbmodem31401";
 
 // Linux:
 //final String PUERTO   = "/dev/ttyACM0";
@@ -244,7 +241,7 @@ PFont fontMono, fontUI;
 void setup() {
   size(1400, 820);
   pixelDensity(1);
-  surface.setTitle("Registro de Disparos - Giga v" + VERSION_PDE);
+  surface.setTitle("Registro de Disparos - Giga");
 
   // Carpeta de datos dentro del propio sketch: funciona igual en Windows, Mac y Linux
   DIR_BASE = sketchPath("datos");

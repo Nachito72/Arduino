@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "1.5"
+#define VERSION_M7 "1.6"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -276,28 +276,27 @@ void loop() {
 
       updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
-      // Filtro complementario:
-      //   Parte GYRO    → gyro.x() integrado: movimiento continuo y suave (0.004° res.)
-      //   Parte ABSOLUTA→ Euler BNO055 (.y() = roll, 1/16°=0.0625°): ancla al grado real
-      //
-      // Con placa montada vertical (X al blanco, Y hacia abajo), la elevación del arma
-      // es una rotación alrededor del eje Z del chip → BNO055 lo reporta en euler.y().
-      // ROLL_OFFSET = -90° porque en posición horizontal el chip lee ≈ -90°.
-      // No hay floorf() ni discontinuidades: el gyro suaviza los "escalones" del Euler.
+      // Filtro complementario ELEVACIÓN:
+      //   Montaje: X→blanco, Y→abajo → Z = X×Y apunta a la DERECHA del tirador
+      //   Elevación (cañón sube/baja) = rotación alrededor del eje Z del chip → gyro.z()
+      //   Ancla absoluta: euler.y() (BNO roll), ≈ -90° cuando arma horizontal
+      //   ROLL_OFFSET = -90° → filteredElev = 0° con arma horizontal, +45° elevado 45°
       imu::Vector<3> gyroVec  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
       imu::Vector<3> eulerVec = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
       float eulerRollAbs = (float)(eulerVec.y() - ROLL_OFFSET);
       float dtSeg        = IMU_PERIOD_MS / 1000.0f;
       if (!filtElevInit) { filteredElev = eulerRollAbs; filtElevInit = true; }
-      else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.x() * dtSeg)
+      else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.z() * dtSeg)
                         + (1.0f - FILTER_ALPHA) * eulerRollAbs;
 
-      // Filtro complementario YAW: combina gyro.z() (suave) con euler.x() (ancla absoluta)
-      // Se maneja el wrap-around 0/360° por el método de error de camino más corto.
+      // Filtro complementario YAW:
+      //   Deriva (giro horizontal) = rotación alrededor del eje vertical = -world_up
+      //   world_up = -chip_Y (chip Y apunta abajo) → yaw rate = gyro.y()
+      //   Ancla absoluta: euler.x() (heading BNO 0-360°, referenciado por gravedad)
       float eulerYawAbs = (float)eulerVec.x();
       if (!filtYawInit) { filteredYaw = eulerYawAbs; filtYawInit = true; }
       else {
-        float yawPred = filteredYaw + (float)gyroVec.z() * dtSeg;
+        float yawPred = filteredYaw + (float)gyroVec.y() * dtSeg;
         while (yawPred >= 360.0f) yawPred -= 360.0f;
         while (yawPred <    0.0f) yawPred += 360.0f;
         float yawErr  = eulerYawAbs - yawPred;
