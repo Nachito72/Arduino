@@ -81,7 +81,7 @@ uint32_t nextImuMs = 0;
 // Combina giroscopio (suave) con roll absoluto (estable a largo plazo).
 // ROLL_OFFSET: ángulo raw que corresponde a pistola plana (0° real).
 // FILTER_ALPHA: peso del giroscopio. 0.95 → τ ≈ 200 ms a 100 Hz.
-const float ROLL_OFFSET  = -85.0f;
+const float ROLL_OFFSET  = -90.0f;  // euler.y() ≈ -90° cuando el arma apunta horizontal (placa vertical, Y hacia abajo)
 const float FILTER_ALPHA = 0.95f;
 float filteredElev = 0.0f;
 bool  filtElevInit = false;
@@ -280,8 +280,9 @@ void loop() {
       //   Parte GYRO    → gyro.x() integrado: movimiento continuo y suave (0.004° res.)
       //   Parte ABSOLUTA→ Euler BNO055 (.y() = roll, 1/16°=0.0625°): ancla al grado real
       //
-      // Usar el Euler como referencia absoluta en lugar del roll del cuaternión hace que
-      // el filtro converja suavemente hacia los grados enteros reales sin ningún salto.
+      // Con placa montada vertical (X al blanco, Y hacia abajo), la elevación del arma
+      // es una rotación alrededor del eje Z del chip → BNO055 lo reporta en euler.y().
+      // ROLL_OFFSET = -90° porque en posición horizontal el chip lee ≈ -90°.
       // No hay floorf() ni discontinuidades: el gyro suaviza los "escalones" del Euler.
       imu::Vector<3> gyroVec  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
       imu::Vector<3> eulerVec = bno.getVector(Adafruit_BNO055::VECTOR_EULER);

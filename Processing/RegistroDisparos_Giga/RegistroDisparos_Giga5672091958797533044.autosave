@@ -60,9 +60,8 @@ float PRESHOT_SEG = 0.200;  // ← 200 ms por defecto
 // Ventana de la diana: tiempo antes y después del disparo que se dibuja como rastro
 float DIANA_PRE_SEG    = 0.200;  // ventana azul pre-disparo (y referencia del centro)
 float DIANA_POST_SEG   = 0.100;  // ventana verde post-disparo
-float DIANA_YELLOW_SEG = 3.000;  // ventana amarilla: antes de la ventana azul
+float DIANA_YELLOW_SEG = 10.000;  // ventana amarilla: antes de la ventana azul
 float DIANA_TAMANO_MM  = 170.0;  // lado de la diana cuadrada (mm) — 17×17 cm ISSF
-float DIANA_SKIP_SEG   = 2.0;    // segundos iniciales de la sesión a descartar en la diana
 
 // Colores de las trazas de la diana (configurables)
 color DIANA_COL_PRE    = color( 80, 150, 255);  // azul:     DIANA_PRE_SEG antes del disparo
@@ -204,7 +203,6 @@ boolean zoomDisparoActivo = false;
 
 int btnDianaX, btnDianaY, btnDianaW = 90, btnDianaH = 20;
 boolean modoDiana = false;
-boolean dianaModoZoom = false;  // true = solo ventana pre-disparo; false = sesión completa
 
 int btnAlinearX, btnAlinearY, btnAlinearW = 130, btnAlinearH = 20;
 
@@ -364,12 +362,10 @@ void serialEvent(Serial p) {
         yawRef = yawRaw;
       }
       double yawRel;
-      if (Double.isNaN(yawRef) || yawRef == 0) {
-        // Referencia aún no capturada: esperar a que el arma apunte al frente
+      if (Double.isNaN(yawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
         yawRel = 0;
+        yawRef = 0;
       } else {
-        // Una vez capturada, mostrar siempre el ángulo relativo real
-        // (no forzar a 0 al elevar el arma — pitchLat cambia por el montaje vertical)
         yawRel = yawRaw - yawRef;
         while (yawRel >  180) yawRel -= 360;
         while (yawRel < -180) yawRel += 360;
@@ -720,11 +716,10 @@ void cargarReproduccion(String ruta) {
         yawRef = yawRaw;
       }
       double yawRel;
-      if (Double.isNaN(yawRef) || yawRef == 0) {
-        // Referencia aún no capturada
+      if (Double.isNaN(yawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
         yawRel = 0;
+        yawRef = 0;
       } else {
-        // Una vez capturada, mantener siempre el ángulo relativo real
         yawRel = yawRaw - yawRef;
         while (yawRel >  180) yawRel -= 360;
         while (yawRel < -180) yawRel += 360;
@@ -888,11 +883,9 @@ void cargarEnSlot(int slot, String ruta) {
         localYawRef = yawRaw;
       }
       double yawRel;
-      if (Double.isNaN(localYawRef) || localYawRef == 0) {
-        // Referencia aún no capturada
-        yawRel = 0;
+      if (Double.isNaN(localYawRef) || !(pitchLat >= PITCH_REF_MIN && pitchLat <= PITCH_REF_MAX)) {
+        yawRel = 0; localYawRef = 0;
       } else {
-        // Una vez capturada, mantener siempre el ángulo relativo real
         yawRel = yawRaw - localYawRef;
         while (yawRel >  180) yawRel -= 360;
         while (yawRel < -180) yawRel += 360;
@@ -1682,13 +1675,9 @@ void dibujarDiana() {
   }
 
   float tShot = grafShots.get(grafShots.size() - 1)[0];
-  float tRef  = tShot - DIANA_PRE_SEG;
-  float tSesionInicio = grafRoll.get(0)[0];
-  float tPre  = dianaModoZoom
-                ? max(tSesionInicio, tRef - DIANA_YELLOW_SEG)
-                : max(tSesionInicio, tSesionInicio + DIANA_SKIP_SEG);
+  float tRef  = tShot - DIANA_PRE_SEG;          // referencia del centro (inicio tramo azul)
+  float tPre  = tRef  - DIANA_YELLOW_SEG;       // inicio de la ventana extendida (tramo amarillo)
   float tPost = tShot + DIANA_POST_SEG;
-  float sesionDur = tShot - tPre;
 
   int nPts = min(grafRoll.size(), grafYaw.size());
   float rollRef = 0, yawRef_d = 0;
@@ -1702,10 +1691,6 @@ void dibujarDiana() {
   bestD = Float.MAX_VALUE;
   for (float[] p : grafYaw)  { float d = abs(p[0] - tShot); if (d < bestD) { bestD = d; yawShot  = p[1]; } }
 
-  // Desplazamiento del disparo respecto al punto de referencia (tRef)
-  float drShot = rollShot - rollRef;
-  float dyShot = yawShot  - yawRef_d;
-
   ArrayList<float[]> ventana = new ArrayList<float[]>();
   for (int i = 0; i < nPts; i++) {
     float t  = grafRoll.get(i)[0];
@@ -1714,23 +1699,14 @@ void dibujarDiana() {
     float dy = grafYaw.get(i)[1]  - yawRef_d;
     ventana.add(new float[]{ t, dr, dy });
   }
-
-  // Ángulo físico que subtiende la mitad de la diana a la distancia configurada
+  // Escala fija: ángulo real que subtiende la mitad de la diana a la distancia configurada.
+  // Así 1 píxel = siempre el mismo ángulo independientemente del movimiento del tirador.
   float dianaHalfDeg = (float)(Math.atan(DIANA_TAMANO_MM / 2.0 / distanciaDiana) * 180.0 / Math.PI);
+  float maxDev = max(dianaHalfDeg * 1.25f, 0.02f); // 25 % de margen más allá del borde
 
-  // Escala ADAPTATIVA: abarca todo el recorrido de la ventana + punto de disparo.
-  // La diana física se dibuja como cuadrado de referencia superpuesto.
-  float maxAbsDr = max(0.005f, abs(drShot));
-  float maxAbsDy = max(0.005f, abs(dyShot));
-  for (float[] p : ventana) {
-    maxAbsDr = max(maxAbsDr, abs(p[1]));
-    maxAbsDy = max(maxAbsDy, abs(p[2]));
-  }
-  // maxDev = el mayor de los dos ejes + 25 % de margen;
-  // mínimo: la mitad de la diana física para que el cuadrado siempre sea visible
-  float maxDev = max(max(maxAbsDr, maxAbsDy) * 1.25f, dianaHalfDeg * 0.5f);
-
-  float sxShot = cx + map(dyShot, -maxDev, maxDev, -r, r);
+  float drShot = rollShot - rollRef;
+  float dyShot = yawShot  - yawRef_d;
+  float sxShot = cx + map(dyShot, -maxDev, maxDev, r, -r);
   float syShot = cy - map(drShot, -maxDev, maxDev, -r, r);
 
   int nRings = 5;
@@ -1771,12 +1747,12 @@ void dibujarDiana() {
     ArrayList<float[]> ptsYellow = new ArrayList<float[]>();
     for (float[] p : ventana) {
       if (p[0] >= tRef) break;
-      ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+      ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                                  cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     for (float[] p : ventana) {  // punto de unión con el tramo azul
       if (p[0] >= tRef) {
-        ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+        ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                                    cy - map(p[1], -maxDev, maxDev, -r, r) });
         break;
       }
@@ -1800,7 +1776,7 @@ void dibujarDiana() {
     for (float[] p : ventana) {
       if (p[0] < tRef) continue;
       if (p[0] > tShot) break;
-      ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+      ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                               cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     ptsPre.add(new float[]{ sxShot, syShot });
@@ -1823,7 +1799,7 @@ void dibujarDiana() {
     ptsPost.add(new float[]{ sxShot, syShot });
     for (float[] p : ventana) {
       if (p[0] <= tShot) continue;
-      ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+      ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, r, -r),
                                cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     ptsPost = suavizar(ptsPost, suavizadoActivo ? SMOOTH_N : 1);
@@ -1842,7 +1818,7 @@ void dibujarDiana() {
 
     for (float[] p : ventana) {
       if (abs(p[0] - tShot) < 0.003) continue;
-      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
+      float sx = cx + map(p[2], -maxDev, maxDev, r, -r);
       float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
       fill(p[0] < tRef ? DIANA_COL_YELLOW : (p[0] < tShot ? DIANA_COL_PRE : DIANA_COL_POST)); noStroke();
       ellipse(sx, sy, 4, 4);
@@ -1851,7 +1827,7 @@ void dibujarDiana() {
     float arrowX = cx, arrowY = cy;
     for (float[] p : ventana) {
       if (p[0] >= tShot) break;
-      arrowX = cx + map(p[2], -maxDev, maxDev, -r, r);
+      arrowX = cx + map(p[2], -maxDev, maxDev, r, -r);
       arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
     }
     float adx = sxShot - arrowX, ady = syShot - arrowY;
@@ -1874,7 +1850,7 @@ void dibujarDiana() {
   fill(255); noStroke(); ellipse(sxShot, syShot, 4, 4);
 
   fill(COL_TEXT); textFont(fontUI); textSize(14); textAlign(CENTER, TOP);
-  text("DIANA  \u2014  Trayectoria completa  ( \u2212" + nf(sesionDur, 1, 1) + " s \u2192 \u2212" + nf(DIANA_PRE_SEG * 1000, 1, 0) + " ms \u2192 \u25cf \u2192 +" + nf(DIANA_POST_SEG * 1000, 1, 0) + " ms )", cx, gy + 8);
+  text("DIANA  —  Trayectoria del disparo  ( \u2212" + nf(DIANA_YELLOW_SEG + DIANA_PRE_SEG, 1, 1) + " s \u2192 \u2212" + nf(DIANA_PRE_SEG * 1000, 1, 0) + " ms \u2192 \u25cf \u2192 +" + nf(DIANA_POST_SEG * 1000, 1, 0) + " ms )", cx, gy + 8);
 
   pushMatrix();
   translate(gx + 22, cy);
@@ -1888,52 +1864,14 @@ void dibujarDiana() {
   textSize(10); textAlign(CENTER, CENTER);
   text("\u25b2 +Roll", cx, cy - r - 16);
   text("\u25bc \u2212Roll", cx, cy + r + 16);
-  text("\u25c4 \u2212Yaw", gx + 44, cy);
-  text("+Yaw \u25ba", gx + gw - 44, cy);
-
-  // Bot\u00f3n zoom: alterna sesi\u00f3n completa / ventana pre-disparo
-  int btnZoomDianaW = 140, btnZoomDianaH = 18;
-  int btnZoomDianaX = gx + gw - btnZoomDianaW - 10;
-  int btnZoomDianaY = gy + 10;
-  boolean hoverZD = mouseX >= btnZoomDianaX && mouseX <= btnZoomDianaX + btnZoomDianaW &&
-                    mouseY >= btnZoomDianaY && mouseY <= btnZoomDianaY + btnZoomDianaH;
-  fill(dianaModoZoom ? color(60, 160, 255) : (hoverZD ? color(80, 80, 120) : color(45)));
-  noStroke(); rect(btnZoomDianaX, btnZoomDianaY, btnZoomDianaW, btnZoomDianaH, 4);
-  fill(dianaModoZoom ? color(0) : color(180));
-  textFont(fontUI); textSize(11); textAlign(CENTER, CENTER);
-  text(dianaModoZoom ? "Ventana " + nf(DIANA_YELLOW_SEG, 1, 0) + "s" : "Sesi\u00f3n completa",
-       btnZoomDianaX + btnZoomDianaW / 2, btnZoomDianaY + btnZoomDianaH / 2);
-
-  // Controles skip − / skip Xs / + (solo en modo sesi\u00f3n completa)
-  if (!dianaModoZoom) {
-    int skipBtnW = 22, skipBtnH = 18, skipLblW = 70;
-    int skipTotalW = skipBtnW * 2 + skipLblW + 4;
-    int skipX  = btnZoomDianaX - skipTotalW - 10;
-    int skipY  = btnZoomDianaY;
-    boolean hSkipM = mouseX >= skipX && mouseX <= skipX + skipBtnW && mouseY >= skipY && mouseY <= skipY + skipBtnH;
-    fill(hSkipM ? color(180, 60, 60) : color(80, 35, 35)); noStroke();
-    rect(skipX, skipY, skipBtnW, skipBtnH, 3);
-    fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
-    text("\u2212", skipX + skipBtnW / 2, skipY + skipBtnH / 2);
-    int skipLblX = skipX + skipBtnW + 2;
-    fill(30); stroke(COL_BORDE); strokeWeight(1);
-    rect(skipLblX, skipY, skipLblW, skipBtnH, 2);
-    fill(DIANA_SKIP_SEG > 0 ? color(255, 180, 30) : COL_TEXTDIM);
-    textFont(fontMono); textSize(11); textAlign(CENTER, CENTER);
-    text("skip " + nf(DIANA_SKIP_SEG, 1, 1) + "s", skipLblX + skipLblW / 2, skipY + skipBtnH / 2);
-    int skipPlusX = skipLblX + skipLblW + 2;
-    boolean hSkipP = mouseX >= skipPlusX && mouseX <= skipPlusX + skipBtnW && mouseY >= skipY && mouseY <= skipY + skipBtnH;
-    fill(hSkipP ? color(60, 180, 60) : color(30, 80, 30)); noStroke();
-    rect(skipPlusX, skipY, skipBtnW, skipBtnH, 3);
-    fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
-    text("+", skipPlusX + skipBtnW / 2, skipY + skipBtnH / 2);
-  }
+  text("\u25c4 +Yaw", gx + 44, cy);
+  text("\u2212Yaw \u25ba", gx + gw - 44, cy);
 
   int legX = gx + 12;
   int legDY = gy + 30;
   noStroke(); fill(DIANA_COL_YELLOW); rect(legX, legDY - 1, 20, 3, 1);
   fill(DIANA_COL_YELLOW); textFont(fontUI); textSize(12); textAlign(LEFT, CENTER);
-  text("Sesi\u00f3n completa (" + nf(sesionDur, 1, 1) + " s)", legX + 26, legDY + 1);
+  text("Pre-disparo (" + nf(DIANA_YELLOW_SEG, 1, 0) + " s)", legX + 26, legDY + 1);
   legDY += 18;
   noStroke(); fill(DIANA_COL_PRE); rect(legX, legDY - 1, 20, 3, 1);
   fill(DIANA_COL_PRE); textAlign(LEFT, CENTER);
@@ -2199,33 +2137,6 @@ void mousePressed() {
       mouseY >= btnDianaY && mouseY <= btnDianaY + btnDianaH) {
     modoDiana = !modoDiana;
     return;
-  }
-
-  // Botón zoom + skip dentro de la diana
-  if (modoDiana) {
-    int gxD = LISTA_W + 10, gyD = HEADER_H + 10, gwD = width - (LISTA_W + 10) - 10;
-    int btnZoomDianaW = 140, btnZoomDianaH = 18;
-    int btnZoomDianaX = gxD + gwD - btnZoomDianaW - 10;
-    int btnZoomDianaY = gyD + 10;
-    if (mouseX >= btnZoomDianaX && mouseX <= btnZoomDianaX + btnZoomDianaW &&
-        mouseY >= btnZoomDianaY && mouseY <= btnZoomDianaY + btnZoomDianaH) {
-      dianaModoZoom = !dianaModoZoom;
-      return;
-    }
-    if (!dianaModoZoom) {
-      int skipBtnW = 22, skipBtnH = 18, skipLblW = 70;
-      int skipX  = btnZoomDianaX - (skipBtnW * 2 + skipLblW + 4) - 10;
-      int skipY  = btnZoomDianaY;
-      if (mouseX >= skipX && mouseX <= skipX + skipBtnW && mouseY >= skipY && mouseY <= skipY + skipBtnH) {
-        DIANA_SKIP_SEG = max(0.0, DIANA_SKIP_SEG - 0.5);
-        return;
-      }
-      int skipPlusX = skipX + skipBtnW + 2 + skipLblW + 2;
-      if (mouseX >= skipPlusX && mouseX <= skipPlusX + skipBtnW && mouseY >= skipY && mouseY <= skipY + skipBtnH) {
-        DIANA_SKIP_SEG += 0.5;
-        return;
-      }
-    }
   }
 
   // ── Botones filtro de volumen (vol− / vol+) ───────────────────────────

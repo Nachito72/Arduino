@@ -15,7 +15,7 @@
 import processing.serial.*;
 
 // ── Configuración de puerto ───────────────────────────────────────
-final String PUERTO   = "COM7";
+final String PUERTO = "/dev/cu.usbmodem3101";
 final int    BAUDRATE = 115200;
 final int    HISTORIA = 800;   // muestras visibles
 

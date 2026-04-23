@@ -12,7 +12,7 @@
 //    'h'  → ayuda + parámetros actuales
 // =====================================================================
 
-const uint8_t  MIC_PIN         = A0;
+const uint8_t  MIC_PIN         = A1;
 const uint16_t MIC_DELAY_US    = 250;    // ~4 kHz
 const uint16_t CONFIRM_SAMPLES = 80;     // ventana máxima ~20 ms
 const uint16_t COOLDOWN_MS     = 300;    // tiempo mínimo entre disparos
