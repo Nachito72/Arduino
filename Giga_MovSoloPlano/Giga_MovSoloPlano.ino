@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "1.8"
+#define VERSION_M7 "2.0"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -77,19 +77,15 @@ uint8_t levelOffStreak = 0;
 const uint32_t IMU_PERIOD_MS = 10;   // 100 Hz — igual que el original
 uint32_t nextImuMs = 0;
 
-// ===================== FILTRO COMPLEMENTARIO ELEVACIÓN =====================
-// Combina giroscopio (suave) con roll absoluto (estable a largo plazo).
-// ROLL_OFFSET: ángulo raw que corresponde a pistola plana (0° real).
-// FILTER_ALPHA: peso del giroscopio. 0.95 → τ ≈ 200 ms a 100 Hz.
-const float ROLL_OFFSET  = -90.0f;  // euler.y() ≈ -90° cuando el arma apunta horizontal (placa vertical, Y hacia abajo)
+// ===================== FILTROS ELEVACIÖN + YAW =====================
+// FILTER_ALPHA: peso del giroscopio en elevación. 0.95 → τ ≈ 200 ms a 100 Hz.
 const float FILTER_ALPHA = 0.95f;
 float filteredElev = 0.0f;
 bool  filtElevInit = false;
 
-// ===================== FILTRO COMPLEMENTARIO YAW =====================
-// Igual que filteredElev pero para el heading (0-360°).
-// eulerVec.x() = heading BNO055 (resolución 1/16° = 0.0625°)
-// gyroVec.z()  = velocidad angular en yaw (°/s, alta resolución)
+// YAW: integración pura de gyro proyectado sobre gravedad (sin anchor).
+// El drift (~1-2°/min) es irrelevante: Processing usa yawRel = yawRaw - yawRef
+// capturado 200ms antes del disparo, así que solo importa la ventana de 300ms.
 float filteredYaw = 0.0f;
 bool  filtYawInit = false;
 
@@ -276,32 +272,35 @@ void loop() {
 
       updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
-      // Filtro complementario ELEVACIÓN:
-      //   Montaje: X→blanco, Y→abajo → Z = X×Y apunta a la DERECHA del tirador
-      //   Elevación (cañón sube/baja) = rotación alrededor del eje Z del chip → gyro.z()
-      //   Ancla absoluta: euler.y() (BNO roll), ≈ -90° cuando arma horizontal
-      //   ROLL_OFFSET = -90° → filteredElev = 0° con arma horizontal, +45° elevado 45°
+      // ── Vector de gravedad (usado para ambos filtros) ───────────────
       imu::Vector<3> gyroVec  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
       imu::Vector<3> eulerVec = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-      float eulerRollAbs = (float)(eulerVec.y() - ROLL_OFFSET);
-      float dtSeg        = IMU_PERIOD_MS / 1000.0f;
-      if (!filtElevInit) { filteredElev = eulerRollAbs; filtElevInit = true; }
-      else filteredElev = FILTER_ALPHA * (filteredElev + (float)gyroVec.z() * dtSeg)
-                        + (1.0f - FILTER_ALPHA) * eulerRollAbs;
-
-      // Integración pura de gyro para YAW (sin anchor euler.x()):
-      //   euler.x() del BNO en IMUPLUS cambia al elevar el arma (no tiene magnetómetro),
-      //   por lo que usarlo como anchor introduce exactamente el cruce que queremos evitar.
-      //   La integración pura es válida porque Processing usa yawRel = yawRaw - yawRef,
-      //   así que la deriva absoluta (≤1°/min típica) no afecta al análisis del disparo.
-      //   Se usan gravVec + gyro para calcular el yaw rate correcto a cualquier ángulo de elevación.
-      imu::Vector<3> gravVec = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+      imu::Vector<3> gravVec  = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
       float gLen = sqrtf(gravVec.x()*gravVec.x() + gravVec.y()*gravVec.y() + gravVec.z()*gravVec.z());
+      float dtSeg = IMU_PERIOD_MS / 1000.0f;
+
+      // ── ELEVACIÓN: ancla desde vector de gravedad ───────────────────
+      // elevation = -arcsin(gravX / |grav|)
+      // Sin gimbal lock, sin acoplamiento yaw, sin ROLL_OFFSET.
+      // Física: chip X apunta al blanco; -arcsin(gravX/g) = 0° horizontal, +90° cañón arriba.
+      if (gLen > 0.5f) {
+        float gravX_n = gravVec.x() / gLen;
+        if (gravX_n >  1.0f) gravX_n =  1.0f;
+        if (gravX_n < -1.0f) gravX_n = -1.0f;
+        float elevAbs = -asinf(gravX_n) * 57.29577951f;
+        if (!filtElevInit) { filteredElev = elevAbs; filtElevInit = true; }
+        else filteredElev = FILTER_ALPHA * (filteredElev + gyroVec.z() * dtSeg)
+                          + (1.0f - FILTER_ALPHA) * elevAbs;
+      }
+
+      // ── YAW: integración pura gyro proyectado sobre gravedad ─────────
+      // yawRate = -dot(gyro, gravNorm): elimina acoplamiento a cualquier ángulo de elevación.
+      // Sin anchor: evita que el heading del BNO (que deriva en IMUPLUS) contamine el yaw.
       float yawRate;
       if (gLen > 0.5f) {
         yawRate = -(gyroVec.x()*gravVec.x() + gyroVec.y()*gravVec.y() + gyroVec.z()*gravVec.z()) / gLen;
       } else {
-        yawRate = gyroVec.y();  // fallback si el acelerómetro falla
+        yawRate = gyroVec.y();
       }
       if (!filtYawInit) { filteredYaw = (float)eulerVec.x(); filtYawInit = true; }
       else {
