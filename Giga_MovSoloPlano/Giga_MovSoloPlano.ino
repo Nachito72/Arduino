@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "2.0"
+#define VERSION_M7 "2.1"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -79,15 +79,15 @@ uint32_t nextImuMs = 0;
 
 // ===================== FILTROS ELEVACIÖN + YAW =====================
 // FILTER_ALPHA: peso del giroscopio en elevación. 0.95 → τ ≈ 200 ms a 100 Hz.
-const float FILTER_ALPHA = 0.95f;
-float filteredElev = 0.0f;
-bool  filtElevInit = false;
-
-// YAW: integración pura de gyro proyectado sobre gravedad (sin anchor).
-// El drift (~1-2°/min) es irrelevante: Processing usa yawRel = yawRaw - yawRef
-// capturado 200ms antes del disparo, así que solo importa la ventana de 300ms.
-float filteredYaw = 0.0f;
-bool  filtYawInit = false;
+const float FILTER_ALPHA    = 0.95f;
+// YAW_BIAS_ALPHA: filtro paso alto sobre yawRate para eliminar bias DC del giroscopio.
+// τ = dt/(1-α) = 0.01/0.002 = 5 s. Elimina la deriva sin atenuar movimientos >0.05Hz.
+const float YAW_BIAS_ALPHA  = 0.998f;
+float filteredElev  = 0.0f;
+bool  filtElevInit  = false;
+float filteredYaw   = 0.0f;
+bool  filtYawInit   = false;
+float yawRateLPF    = 0.0f;  // estimación lenta del bias del giroscopio en yaw
 
 // ===================== SHOT FLAG =====================
 // En lugar de enviar "SHOT,MECH", se añade 0/1 + nivel acústico.
@@ -120,6 +120,7 @@ bool reinitBNO() {
   bno.setExtCrystalUse(true);
   filtElevInit    = false;
   filtYawInit     = false;
+  yawRateLPF      = 0.0f;
   bnoWarmupEndMs  = millis() + 1000; // esperar 1s antes de contar errores de fusión
   Serial.println("// BNO055: reinit OK");
   return true;
@@ -302,9 +303,13 @@ void loop() {
       } else {
         yawRate = gyroVec.y();
       }
-      if (!filtYawInit) { filteredYaw = (float)eulerVec.x(); filtYawInit = true; }
+      if (!filtYawInit) { filteredYaw = (float)eulerVec.x(); filtYawInit = true; yawRateLPF = 0.0f; }
       else {
-        filteredYaw += yawRate * dtSeg;
+        // Filtro paso alto: yawRateLPF converge lentamente al bias DC del gyro (τ=5s).
+        // yawRateCorrected = yawRate - bias: movimientos reales pasan, deriva desaparece.
+        yawRateLPF = YAW_BIAS_ALPHA * yawRateLPF + (1.0f - YAW_BIAS_ALPHA) * yawRate;
+        float yawRateCorrected = yawRate - yawRateLPF;
+        filteredYaw += yawRateCorrected * dtSeg;
         while (filteredYaw >= 360.0f) filteredYaw -= 360.0f;
         while (filteredYaw <    0.0f) filteredYaw += 360.0f;
       }
