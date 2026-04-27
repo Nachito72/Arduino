@@ -264,9 +264,10 @@ void loop() {
 
       updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
-      // ── ELEVACIÓN: pitch del cuaternión ────────────────────────────
-      // Misma fórmula que DiagBNO055Raw.ino (sinp ya calculado arriba).
-      filteredElev = (float)pitchDeg;
+      // ── ELEVACIÓN: pitch del cuaternión negado ─────────────────────
+      // DiagViewer.pde niega el pitch en línea 92: pitch = -t[6]
+      // → subir el arma produce línea hacia arriba.
+      filteredElev = -(float)pitchDeg;
 
       // ── YAW: heading del cuaternión [0..360°] ───────────────────────
       // Misma fórmula que DiagBNO055Raw.ino.
