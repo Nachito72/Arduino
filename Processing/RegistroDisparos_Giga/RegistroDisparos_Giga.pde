@@ -13,7 +13,7 @@ import java.text.SimpleDateFormat;
 import javax.sound.sampled.*;
 
 // ===================== VERSIÓN =====================
-final String VERSION_PDE = "1.1";
+final String VERSION_PDE = "1.2";
 
 
 // ===================== ESTABILIDAD DE ELEVACION =====================
@@ -208,6 +208,9 @@ boolean zoomDisparoActivo = false;
 int btnDianaX, btnDianaY, btnDianaW = 90, btnDianaH = 20;
 boolean modoDiana = false;
 boolean dianaModoZoom = false;  // true = solo ventana pre-disparo; false = sesión completa
+boolean dianaPlayActive  = false;  // reproducción animada en la diana
+int     dianaPlayStartMs = 0;      // millis() al iniciar la reproducción
+float   dianaPlaySpeed   = 2.0;    // velocidad: 1x, 2x, 5x, 10x
 
 int btnAlinearX, btnAlinearY, btnAlinearW = 130, btnAlinearH = 20;
 
@@ -455,6 +458,7 @@ void iniciarSesion() {
   zoomMin[1] =   0;  zoomMax[1] = 360;  zoomLocked[1] = false;
   zoomDisparoActivo = false;
   modoDiana = false;
+  dianaPlayActive = false;
   modoAlineacion = 0;
   mainTimeOffset = 0;
   for (int s = 0; s < 10; s++) compTimeOffset[s] = 0;
@@ -1736,6 +1740,17 @@ void dibujarDiana() {
   float sxShot = cx + map(dyShot, -maxDev, maxDev, -r, r);
   float syShot = cy - map(drShot, -maxDev, maxDev, -r, r);
 
+  // ── Reproducción animada: cortar la traza en el tiempo actual ──────────
+  float tCutoff = tPost;
+  if (dianaPlayActive) {
+    float elapsed = (millis() - dianaPlayStartMs) / 1000.0 * dianaPlaySpeed;
+    tCutoff = tPre + elapsed;
+    if (tCutoff >= tPost) { tCutoff = tPost; dianaPlayActive = false; }
+  }
+  ArrayList<float[]> ventanaDraw = new ArrayList<float[]>();
+  for (float[] p : ventana) { if (p[0] <= tCutoff) ventanaDraw.add(p); else break; }
+  boolean mostrarDisparo = (tCutoff >= tShot);
+
   int nRings = 5;
   color[] ringCols = {
     color(180, 20, 20),
@@ -1769,15 +1784,15 @@ void dibujarDiana() {
   line(gx + 8, cy, gx + gw - 8, cy);
   line(cx, gy + 8, cx, gy + gh - 8);
 
-  if (ventana.size() >= 2) {
+  if (ventanaDraw.size() >= 2) {
     // ── Tramo amarillo: desde tPre hasta tRef ──────────────────────────
     ArrayList<float[]> ptsYellow = new ArrayList<float[]>();
-    for (float[] p : ventana) {
+    for (float[] p : ventanaDraw) {
       if (p[0] >= tRef) break;
       ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
                                  cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
-    for (float[] p : ventana) {  // punto de unión con el tramo azul
+    for (float[] p : ventanaDraw) {  // punto de unión con el tramo azul
       if (p[0] >= tRef) {
         ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
                                    cy - map(p[1], -maxDev, maxDev, -r, r) });
@@ -1800,13 +1815,13 @@ void dibujarDiana() {
 
     // ── Tramo azul: desde tRef hasta tShot ─────────────────────────────
     ArrayList<float[]> ptsPre = new ArrayList<float[]>();
-    for (float[] p : ventana) {
+    for (float[] p : ventanaDraw) {
       if (p[0] < tRef) continue;
       if (p[0] > tShot) break;
       ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
                               cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
-    ptsPre.add(new float[]{ sxShot, syShot });
+    if (mostrarDisparo) ptsPre.add(new float[]{ sxShot, syShot });
     ptsPre = suavizar(ptsPre, suavizadoActivo ? SMOOTH_N : 1);
     if (ptsPre.size() >= 2) {
       stroke(DIANA_COL_PRE); strokeWeight(2.5); noFill();
@@ -1823,8 +1838,8 @@ void dibujarDiana() {
 
     // ── Tramo verde: post-disparo ───────────────────────────────────────
     ArrayList<float[]> ptsPost = new ArrayList<float[]>();
-    ptsPost.add(new float[]{ sxShot, syShot });
-    for (float[] p : ventana) {
+    if (mostrarDisparo) ptsPost.add(new float[]{ sxShot, syShot });
+    for (float[] p : ventanaDraw) {
       if (p[0] <= tShot) continue;
       ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
                                cy - map(p[1], -maxDev, maxDev, -r, r) });
@@ -1843,7 +1858,7 @@ void dibujarDiana() {
       endShape();
     }
 
-    for (float[] p : ventana) {
+    for (float[] p : ventanaDraw) {
       if (abs(p[0] - tShot) < 0.003) continue;
       float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
       float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
@@ -1851,20 +1866,31 @@ void dibujarDiana() {
       ellipse(sx, sy, 4, 4);
     }
 
-    float arrowX = cx, arrowY = cy;
-    for (float[] p : ventana) {
-      if (p[0] >= tShot) break;
-      arrowX = cx + map(p[2], -maxDev, maxDev, -r, r);
-      arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
+    if (mostrarDisparo) {
+      float arrowX = cx, arrowY = cy;
+      for (float[] p : ventanaDraw) {
+        if (p[0] >= tShot) break;
+        arrowX = cx + map(p[2], -maxDev, maxDev, -r, r);
+        arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
+      }
+      float adx = sxShot - arrowX, ady = syShot - arrowY;
+      float alen = sqrt(adx * adx + ady * ady);
+      if (alen > 6) {
+        float nx = adx / alen, ny = ady / alen;
+        float headLen = min(14, alen * 0.5);
+        float hx2 = sxShot - nx * headLen, hy2 = syShot - ny * headLen;
+        fill(DIANA_COL_PRE); noStroke();
+        triangle(sxShot, syShot, hx2 + (-ny) * 4, hy2 + nx * 4, hx2 - (-ny) * 4, hy2 - nx * 4);
+      }
     }
-    float adx = sxShot - arrowX, ady = syShot - arrowY;
-    float alen = sqrt(adx * adx + ady * ady);
-    if (alen > 6) {
-      float nx = adx / alen, ny = ady / alen;
-      float headLen = min(14, alen * 0.5);
-      float hx2 = sxShot - nx * headLen, hy2 = syShot - ny * headLen;
-      fill(DIANA_COL_PRE); noStroke();
-      triangle(sxShot, syShot, hx2 + (-ny) * 4, hy2 + nx * 4, hx2 - (-ny) * 4, hy2 - nx * 4);
+    // Cursor animado (posición actual en reproducción)
+    if (dianaPlayActive && ventanaDraw.size() > 0) {
+      float[] curPt = ventanaDraw.get(ventanaDraw.size() - 1);
+      float curX = cx + map(curPt[2], -maxDev, maxDev, -r, r);
+      float curY = cy - map(curPt[1], -maxDev, maxDev, -r, r);
+      stroke(255, 240, 80); strokeWeight(2.5);
+      fill(255, 240, 80, 180); ellipse(curX, curY, 13, 13);
+      fill(255); noStroke(); ellipse(curX, curY, 5, 5);
     }
   }
 
@@ -1872,9 +1898,11 @@ void dibujarDiana() {
   ellipse(cx, cy, 10, 10);
   fill(255); noStroke(); ellipse(cx, cy, 4, 4);
 
-  fill(COL_SHOT); stroke(255, 180, 180); strokeWeight(1.5);
-  ellipse(sxShot, syShot, 14, 14);
-  fill(255); noStroke(); ellipse(sxShot, syShot, 4, 4);
+  if (mostrarDisparo) {
+    fill(COL_SHOT); stroke(255, 180, 180); strokeWeight(1.5);
+    ellipse(sxShot, syShot, 14, 14);
+    fill(255); noStroke(); ellipse(sxShot, syShot, 4, 4);
+  }
 
   fill(COL_TEXT); textFont(fontUI); textSize(14); textAlign(CENTER, TOP);
   text("DIANA  \u2014  Trayectoria completa  ( \u2212" + nf(sesionDur, 1, 1) + " s \u2192 \u2212" + nf(DIANA_PRE_SEG * 1000, 1, 0) + " ms \u2192 \u25cf \u2192 +" + nf(DIANA_POST_SEG * 1000, 1, 0) + " ms )", cx, gy + 8);
@@ -1907,11 +1935,27 @@ void dibujarDiana() {
   text(dianaModoZoom ? "Ventana " + nf(DIANA_YELLOW_SEG, 1, 0) + "s" : "Sesi\u00f3n completa",
        btnZoomDianaX + btnZoomDianaW / 2, btnZoomDianaY + btnZoomDianaH / 2);
 
+  // ── Botones ▶ Play y velocidad ──────────────────────────────────────
+  int btnPlayW = 30, btnPlayH = 18;
+  int btnSpeedW = 38, btnSpeedH = 18;
+  int btnSpeedX = btnZoomDianaX - btnSpeedW - 4;
+  int btnPlayX  = btnSpeedX - btnPlayW - 4;
+  boolean hoverPlay  = mouseX >= btnPlayX  && mouseX <= btnPlayX  + btnPlayW  && mouseY >= btnZoomDianaY && mouseY <= btnZoomDianaY + btnPlayH;
+  boolean hoverSpeed = mouseX >= btnSpeedX && mouseX <= btnSpeedX + btnSpeedW && mouseY >= btnZoomDianaY && mouseY <= btnZoomDianaY + btnSpeedH;
+  fill(dianaPlayActive ? color(200, 60, 60) : (hoverPlay ? color(60, 200, 80) : color(30, 100, 40))); noStroke();
+  rect(btnPlayX, btnZoomDianaY, btnPlayW, btnPlayH, 4);
+  fill(255); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
+  text(dianaPlayActive ? "\u25a0" : "\u25ba", btnPlayX + btnPlayW / 2, btnZoomDianaY + btnPlayH / 2);
+  fill(hoverSpeed ? color(80, 80, 140) : color(45)); noStroke();
+  rect(btnSpeedX, btnZoomDianaY, btnSpeedW, btnSpeedH, 4);
+  fill(color(160, 160, 220)); textFont(fontMono); textSize(11); textAlign(CENTER, CENTER);
+  text(str((int)dianaPlaySpeed) + "x", btnSpeedX + btnSpeedW / 2, btnZoomDianaY + btnSpeedH / 2);
+
   // Controles skip − / skip Xs / + (solo en modo sesi\u00f3n completa)
   if (!dianaModoZoom) {
     int skipBtnW = 22, skipBtnH = 18, skipLblW = 70;
     int skipTotalW = skipBtnW * 2 + skipLblW + 4;
-    int skipX  = btnZoomDianaX - skipTotalW - 10;
+    int skipX  = btnPlayX - skipTotalW - 6;
     int skipY  = btnZoomDianaY;
     boolean hSkipM = mouseX >= skipX && mouseX <= skipX + skipBtnW && mouseY >= skipY && mouseY <= skipY + skipBtnH;
     fill(hSkipM ? color(180, 60, 60) : color(80, 35, 35)); noStroke();
@@ -2201,6 +2245,7 @@ void mousePressed() {
   if (mouseX >= btnDianaX && mouseX <= btnDianaX + btnDianaW &&
       mouseY >= btnDianaY && mouseY <= btnDianaY + btnDianaH) {
     modoDiana = !modoDiana;
+    if (!modoDiana) dianaPlayActive = false;  // parar reproducción al cerrar
     return;
   }
 
@@ -2215,9 +2260,32 @@ void mousePressed() {
       dianaModoZoom = !dianaModoZoom;
       return;
     }
+    // Botones Play y Velocidad
+    int _btnSpeedW = 38, _btnPlayW = 30;
+    int _btnSpeedX = btnZoomDianaX - _btnSpeedW - 4;
+    int _btnPlayX  = _btnSpeedX - _btnPlayW - 4;
+    if (mouseX >= _btnPlayX && mouseX <= _btnPlayX + _btnPlayW &&
+        mouseY >= btnZoomDianaY && mouseY <= btnZoomDianaY + 18) {
+      if (dianaPlayActive) {
+        dianaPlayActive = false;
+      } else {
+        dianaPlayActive = true;
+        dianaPlayStartMs = millis();
+      }
+      return;
+    }
+    if (mouseX >= _btnSpeedX && mouseX <= _btnSpeedX + _btnSpeedW &&
+        mouseY >= btnZoomDianaY && mouseY <= btnZoomDianaY + 18) {
+      if      (dianaPlaySpeed == 1.0) dianaPlaySpeed = 2.0;
+      else if (dianaPlaySpeed == 2.0) dianaPlaySpeed = 5.0;
+      else if (dianaPlaySpeed == 5.0) dianaPlaySpeed = 10.0;
+      else                            dianaPlaySpeed = 1.0;
+      return;
+    }
     if (!dianaModoZoom) {
       int skipBtnW = 22, skipBtnH = 18, skipLblW = 70;
-      int skipX  = btnZoomDianaX - (skipBtnW * 2 + skipLblW + 4) - 10;
+      int skipTotalW_ = skipBtnW * 2 + skipLblW + 4;
+      int skipX  = _btnPlayX - skipTotalW_ - 6;
       int skipY  = btnZoomDianaY;
       if (mouseX >= skipX && mouseX <= skipX + skipBtnW && mouseY >= skipY && mouseY <= skipY + skipBtnH) {
         DIANA_SKIP_SEG = max(0.0, DIANA_SKIP_SEG - 0.5);
