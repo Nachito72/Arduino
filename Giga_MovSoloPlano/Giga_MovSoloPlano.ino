@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "2.2"
+#define VERSION_M7 "2.3"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -269,11 +269,11 @@ void loop() {
       // → subir el arma produce línea hacia arriba.
       filteredElev = -(float)pitchDeg;
 
-      // ── YAW: heading del cuaternión [0..360°] ───────────────────────
-      // Misma fórmula que DiagBNO055Raw.ino.
+      // ── YAW: heading del cuaternión [0..360°], negado para corregir
+      // sentido izq/der con este montaje del sensor.
       double sinyq = 2.0*(qw*qz + qx*qy);
       double cosyq = 1.0 - 2.0*(qy*qy + qz*qz);
-      double yawDeg = atan2(sinyq, cosyq) * R2D;
+      double yawDeg = -atan2(sinyq, cosyq) * R2D;  // negado: girar derecha → yaw sube
       if (yawDeg < 0.0) yawDeg += 360.0;
       filteredYaw = (float)yawDeg;
 
