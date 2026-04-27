@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "2.3"
+#define VERSION_M7 "2.4"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -273,7 +273,7 @@ void loop() {
       // sentido izq/der con este montaje del sensor.
       double sinyq = 2.0*(qw*qz + qx*qy);
       double cosyq = 1.0 - 2.0*(qy*qy + qz*qz);
-      double yawDeg = -atan2(sinyq, cosyq) * R2D;  // negado: girar derecha → yaw sube
+      double yawDeg = atan2(sinyq, cosyq) * R2D;  // valor físico sin invertir; la inversión izq/der se aplica solo en la diana (Processing)
       if (yawDeg < 0.0) yawDeg += 360.0;
       filteredYaw = (float)yawDeg;
 

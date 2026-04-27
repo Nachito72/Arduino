@@ -38,7 +38,7 @@ long        ultimoPitidoAmbosMs = 0;
 //final String PUERTO   = "COM9";
 
 // Mac:
-final String PUERTO = "/dev/cu.usbmodem3101";
+final String PUERTO = "/dev/cu.usbmodem31401";
 
 // Linux:
 //final String PUERTO   = "/dev/ttyACM0";
@@ -1682,6 +1682,11 @@ void dibujarDiana() {
   int cy = gy + gh / 2;
   int r  = min(gw - 120, gh - 120) / 2;
 
+  // ── Sentido del eje horizontal de la diana ───────────────────────────
+  // 1.0 = normal  |  -1.0 = invertido (izq↔der)
+  // Cambiar SOLO este valor para invertir todos los 8 puntos a la vez.
+  final float yawDir = -1.0;
+
   if (grafShots.size() == 0 || min(grafRoll.size(), grafYaw.size()) == 0) {
     fill(COL_TEXTDIM); textFont(fontUI); textSize(15); textAlign(CENTER, CENTER);
     text("Sin datos de disparo.\nSelecciona una sesión con disparos en la lista.", cx, cy);
@@ -1737,7 +1742,7 @@ void dibujarDiana() {
   // mínimo: la mitad de la diana física para que el cuadrado siempre sea visible
   float maxDev = max(max(maxAbsDr, maxAbsDy) * 1.25f, dianaHalfDeg * 0.5f);
 
-  float sxShot = cx + map(dyShot, -maxDev, maxDev, -r, r);
+  float sxShot = cx + map(dyShot * yawDir, -maxDev, maxDev, -r, r);
   float syShot = cy - map(drShot, -maxDev, maxDev, -r, r);
 
   // ── Reproducción animada: cortar la traza en el tiempo actual ──────────
@@ -1789,12 +1794,12 @@ void dibujarDiana() {
     ArrayList<float[]> ptsYellow = new ArrayList<float[]>();
     for (float[] p : ventanaDraw) {
       if (p[0] >= tRef) break;
-      ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+      ptsYellow.add(new float[]{ cx + map(p[2] * yawDir, -maxDev, maxDev, -r, r),
                                  cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     for (float[] p : ventanaDraw) {  // punto de unión con el tramo azul
       if (p[0] >= tRef) {
-        ptsYellow.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+        ptsYellow.add(new float[]{ cx + map(p[2] * yawDir, -maxDev, maxDev, -r, r),
                                    cy - map(p[1], -maxDev, maxDev, -r, r) });
         break;
       }
@@ -1818,7 +1823,7 @@ void dibujarDiana() {
     for (float[] p : ventanaDraw) {
       if (p[0] < tRef) continue;
       if (p[0] > tShot) break;
-      ptsPre.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+      ptsPre.add(new float[]{ cx + map(p[2] * yawDir, -maxDev, maxDev, -r, r),
                               cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     if (mostrarDisparo) ptsPre.add(new float[]{ sxShot, syShot });
@@ -1841,7 +1846,7 @@ void dibujarDiana() {
     if (mostrarDisparo) ptsPost.add(new float[]{ sxShot, syShot });
     for (float[] p : ventanaDraw) {
       if (p[0] <= tShot) continue;
-      ptsPost.add(new float[]{ cx + map(p[2], -maxDev, maxDev, -r, r),
+      ptsPost.add(new float[]{ cx + map(p[2] * yawDir, -maxDev, maxDev, -r, r),
                                cy - map(p[1], -maxDev, maxDev, -r, r) });
     }
     ptsPost = suavizar(ptsPost, suavizadoActivo ? SMOOTH_N : 1);
@@ -1860,7 +1865,7 @@ void dibujarDiana() {
 
     for (float[] p : ventanaDraw) {
       if (abs(p[0] - tShot) < 0.003) continue;
-      float sx = cx + map(p[2], -maxDev, maxDev, -r, r);
+      float sx = cx + map(p[2] * yawDir, -maxDev, maxDev, -r, r);
       float sy = cy - map(p[1], -maxDev, maxDev, -r, r);
       fill(p[0] < tRef ? DIANA_COL_YELLOW : (p[0] < tShot ? DIANA_COL_PRE : DIANA_COL_POST)); noStroke();
       ellipse(sx, sy, 4, 4);
@@ -1870,7 +1875,7 @@ void dibujarDiana() {
       float arrowX = cx, arrowY = cy;
       for (float[] p : ventanaDraw) {
         if (p[0] >= tShot) break;
-        arrowX = cx + map(p[2], -maxDev, maxDev, -r, r);
+        arrowX = cx + map(p[2] * yawDir, -maxDev, maxDev, -r, r);
         arrowY = cy - map(p[1], -maxDev, maxDev, -r, r);
       }
       float adx = sxShot - arrowX, ady = syShot - arrowY;
@@ -1886,7 +1891,7 @@ void dibujarDiana() {
     // Cursor animado (posición actual en reproducción)
     if (dianaPlayActive && ventanaDraw.size() > 0) {
       float[] curPt = ventanaDraw.get(ventanaDraw.size() - 1);
-      float curX = cx + map(curPt[2], -maxDev, maxDev, -r, r);
+      float curX = cx + map(curPt[2] * yawDir, -maxDev, maxDev, -r, r);
       float curY = cy - map(curPt[1], -maxDev, maxDev, -r, r);
       stroke(255, 240, 80); strokeWeight(2.5);
       fill(255, 240, 80, 180); ellipse(curX, curY, 13, 13);
