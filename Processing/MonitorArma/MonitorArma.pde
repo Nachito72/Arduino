@@ -1,7 +1,10 @@
 import processing.serial.*;
 
 // ===================== CONFIGURACIÓN =====================
-final String PUERTO    = "COM3";   // ← Cambia al puerto de tu Arduino
+// Mac:
+final String PUERTO = "/dev/cu.usbmodem3101";
+//Windows
+//final String PUERTO    = "COM3";   // ← Cambia al puerto de tu Arduino
 final int    BAUDRATE  = 115200;
 final int    MAX_PUNTOS = 300;     // Puntos visibles en el gráfico
 

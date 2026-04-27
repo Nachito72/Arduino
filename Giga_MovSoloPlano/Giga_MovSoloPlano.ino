@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "2.1"
+#define VERSION_M7 "2.2"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -77,17 +77,11 @@ uint8_t levelOffStreak = 0;
 const uint32_t IMU_PERIOD_MS = 10;   // 100 Hz — igual que el original
 uint32_t nextImuMs = 0;
 
-// ===================== FILTROS ELEVACIÖN + YAW =====================
-// FILTER_ALPHA: peso del giroscopio en elevación. 0.95 → τ ≈ 200 ms a 100 Hz.
-const float FILTER_ALPHA    = 0.95f;
-// YAW_BIAS_ALPHA: filtro paso alto sobre yawRate para eliminar bias DC del giroscopio.
-// τ = dt/(1-α) = 0.01/0.002 = 5 s. Elimina la deriva sin atenuar movimientos >0.05Hz.
-const float YAW_BIAS_ALPHA  = 0.998f;
+// ===================== ELEVACIÓN + YAW =====================
+// Valores calculados directamente del cuaternión BNO055,
+// igual que DiagBNO055Raw.ino (mismas fórmulas, mismos valores).
 float filteredElev  = 0.0f;
-bool  filtElevInit  = false;
 float filteredYaw   = 0.0f;
-bool  filtYawInit   = false;
-float yawRateLPF    = 0.0f;  // estimación lenta del bias del giroscopio en yaw
 
 // ===================== SHOT FLAG =====================
 // En lugar de enviar "SHOT,MECH", se añade 0/1 + nivel acústico.
@@ -118,9 +112,6 @@ bool reinitBNO() {
     return false;
   }
   bno.setExtCrystalUse(true);
-  filtElevInit    = false;
-  filtYawInit     = false;
-  yawRateLPF      = 0.0f;
   bnoWarmupEndMs  = millis() + 1000; // esperar 1s antes de contar errores de fusión
   Serial.println("// BNO055: reinit OK");
   return true;
@@ -273,46 +264,17 @@ void loop() {
 
       updateArmingFromTilt((float)rollDeg, (float)pitchDeg);
 
-      // ── Vector de gravedad (usado para ambos filtros) ───────────────
-      imu::Vector<3> gyroVec  = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
-      imu::Vector<3> eulerVec = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-      imu::Vector<3> gravVec  = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
-      float gLen = sqrtf(gravVec.x()*gravVec.x() + gravVec.y()*gravVec.y() + gravVec.z()*gravVec.z());
-      float dtSeg = IMU_PERIOD_MS / 1000.0f;
+      // ── ELEVACIÓN: pitch del cuaternión ────────────────────────────
+      // Misma fórmula que DiagBNO055Raw.ino (sinp ya calculado arriba).
+      filteredElev = (float)pitchDeg;
 
-      // ── ELEVACIÓN: ancla desde vector de gravedad ───────────────────
-      // elevation = -arcsin(gravX / |grav|)
-      // Sin gimbal lock, sin acoplamiento yaw, sin ROLL_OFFSET.
-      // Física: chip X apunta al blanco; -arcsin(gravX/g) = 0° horizontal, +90° cañón arriba.
-      if (gLen > 0.5f) {
-        float gravX_n = gravVec.x() / gLen;
-        if (gravX_n >  1.0f) gravX_n =  1.0f;
-        if (gravX_n < -1.0f) gravX_n = -1.0f;
-        float elevAbs = -asinf(gravX_n) * 57.29577951f;
-        if (!filtElevInit) { filteredElev = elevAbs; filtElevInit = true; }
-        else filteredElev = FILTER_ALPHA * (filteredElev + gyroVec.z() * dtSeg)
-                          + (1.0f - FILTER_ALPHA) * elevAbs;
-      }
-
-      // ── YAW: integración pura gyro proyectado sobre gravedad ─────────
-      // yawRate = -dot(gyro, gravNorm): elimina acoplamiento a cualquier ángulo de elevación.
-      // Sin anchor: evita que el heading del BNO (que deriva en IMUPLUS) contamine el yaw.
-      float yawRate;
-      if (gLen > 0.5f) {
-        yawRate = -(gyroVec.x()*gravVec.x() + gyroVec.y()*gravVec.y() + gyroVec.z()*gravVec.z()) / gLen;
-      } else {
-        yawRate = gyroVec.y();
-      }
-      if (!filtYawInit) { filteredYaw = (float)eulerVec.x(); filtYawInit = true; yawRateLPF = 0.0f; }
-      else {
-        // Filtro paso alto: yawRateLPF converge lentamente al bias DC del gyro (τ=5s).
-        // yawRateCorrected = yawRate - bias: movimientos reales pasan, deriva desaparece.
-        yawRateLPF = YAW_BIAS_ALPHA * yawRateLPF + (1.0f - YAW_BIAS_ALPHA) * yawRate;
-        float yawRateCorrected = yawRate - yawRateLPF;
-        filteredYaw += yawRateCorrected * dtSeg;
-        while (filteredYaw >= 360.0f) filteredYaw -= 360.0f;
-        while (filteredYaw <    0.0f) filteredYaw += 360.0f;
-      }
+      // ── YAW: heading del cuaternión [0..360°] ───────────────────────
+      // Misma fórmula que DiagBNO055Raw.ino.
+      double sinyq = 2.0*(qw*qz + qx*qy);
+      double cosyq = 1.0 - 2.0*(qy*qy + qz*qz);
+      double yawDeg = atan2(sinyq, cosyq) * R2D;
+      if (yawDeg < 0.0) yawDeg += 360.0;
+      filteredYaw = (float)yawDeg;
 
       if (armed) {
         // Formato: ms,qw,qx,qy,qz,filteredElev,shot

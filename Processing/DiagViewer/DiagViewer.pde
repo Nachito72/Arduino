@@ -23,7 +23,12 @@
 import processing.serial.*;
 
 // ─── CONFIGURACIÓN ──────────────────────────────────────────────────
-final String SERIAL_PORT = "COM7";   // ← cambiar si hace falta
+// Mac:
+final String SERIAL_PORT = "/dev/cu.usbmodem31401";
+
+// final String SERIAL_PORT = "COM7";   // ← cambiar si hace falta
+
+
 final int    BAUD        = 500000;
 final int    MAX_SAMPLES = 1000;     // puntos en el histórico por canal
 // ────────────────────────────────────────────────────────────────────
