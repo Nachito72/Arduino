@@ -1,0 +1,19 @@
+RegistroDisparos_Giga layout context
+
+Header zones (HEADER_H = 80)
+- Top-left: armed state + timer
+- Top-center: status/search bar
+- Top-right: port text and main controls row
+- Bottom-left: timer badge
+- Bottom-right: test sound button
+- Bottom band between timer and test sound: calibration badge / short status labels
+
+Placement rules
+- Do not add new controls on the same y-row as the top-right buttons unless they are part of that button group.
+- Prefer the bottom band (y around 54..74) for compact status badges.
+- Keep calibration status compact and right-aligned so it never covers the port text or button labels.
+- If a new control needs width, first check the bottom band and only then extend the header height.
+
+Current calibration badge
+- Drawn in the bottom band, left of the test sound button.
+- Use the same reserved band for any future sensor-state badge if it remains compact.

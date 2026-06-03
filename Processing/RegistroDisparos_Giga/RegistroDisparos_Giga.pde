@@ -38,10 +38,10 @@ long        ultimoPitidoAmbosMs = 0;
 //final String PUERTO   = "COM9";
 
 // Mac:
-//final String PUERTO = "/dev/cu.usbmodem31401";
+final String PUERTO = "/dev/cu.usbmodem31201";
 
 // Linux:
-final String PUERTO   = "/dev/ttyACM0";
+//final String PUERTO   = "/dev/ttyACM0";
 
 final int    BAUDRATE = 500000;
 // Carpeta de grabaciones: relativa al sketch → funciona en Windows, Mac y Linux
@@ -113,6 +113,17 @@ boolean armado      = false;
 boolean grabando    = false;   // true entre ARMED y DISARMED
 int     shotCount   = 0;       // disparos en la sesión actual
 boolean shotPendiente = false; // shot recibido en sesión actual
+int     calGyro     = -1;      // -1 = sin datos de calibracion
+int     calAccel    = -1;
+int     calUiState  = 0;       // 0=sin datos, 1=ok, 2=baja, 3=critica
+int     calBadStreak  = 0;
+int     calGoodStreak = 0;
+int     calCritStreak = 0;
+long    calLastRxMs   = 0;
+final int CAL_ENTER_LOW_STREAK  = 2;
+final int CAL_ENTER_CRIT_STREAK = 2;
+final int CAL_EXIT_BAD_STREAK   = 2;
+final int CAL_RX_TIMEOUT_MS     = 7000;
 
 // ===================== TEMPORIZADOR INTER-DISPAROS =====================
 long    timerInicioMs = 0;
@@ -307,6 +318,43 @@ void serialEvent(Serial p) {
     return;
   }
   if (linea.equals("Ready") || linea.startsWith("//")) return;
+
+  if (linea.startsWith("CAL,")) {
+    String[] c = split(linea, ',');
+    if (c.length >= 3) {
+      try {
+        calGyro = Integer.parseInt(c[1].trim());
+        calAccel = Integer.parseInt(c[2].trim());
+
+        calLastRxMs = millis();
+        boolean crit = (calGyro == 0);
+        boolean baja = (calGyro < 2 || calAccel < 2);
+
+        if (crit) {
+          calCritStreak++;
+          calBadStreak++;
+          calGoodStreak = 0;
+        } else if (baja) {
+          calBadStreak++;
+          calCritStreak = 0;
+          calGoodStreak = 0;
+        } else {
+          calGoodStreak++;
+          calBadStreak = 0;
+          calCritStreak = 0;
+        }
+
+        if (calCritStreak >= CAL_ENTER_CRIT_STREAK) {
+          calUiState = 3;
+        } else if (calBadStreak >= CAL_ENTER_LOW_STREAK && calUiState != 3) {
+          calUiState = 2;
+        } else if (calGoodStreak >= CAL_EXIT_BAD_STREAK) {
+          calUiState = 1;
+        }
+      } catch (Exception e) {}
+    }
+    return;
+  }
 
   String[] t = split(linea, ',');
   // Formato nuevo (v1.6+): 8 campos  ms,qw,qx,qy,qz,filteredElev,filteredYaw,shot
@@ -1047,6 +1095,48 @@ void dibujarHeader() {
   rect(btnSndX, btnSndY, btnSndW, btnSndH, 4);
   fill(200); textFont(fontUI); textSize(12); textAlign(CENTER, CENTER);
   text("♪ Test sonido", btnSndX + btnSndW / 2, btnSndY + btnSndH / 2);
+
+  // Estado de calibracion IMUPLUS (gyro + accel) enviado por firmware: CAL,g,a
+  int calW = 255;
+  int calH = 18;
+  int calX = width - btnSndW - calW - 24;
+  int calY = HEADER_H - calH - 6;
+  textFont(fontUI); textSize(13); textAlign(LEFT, CENTER);
+  boolean calTimedOut = (calLastRxMs == 0) || (millis() - calLastRxMs > CAL_RX_TIMEOUT_MS);
+  String calAdvice = "";
+  color calAdviceColor = color(150);
+  if (calGyro < 0 || calAccel < 0 || calTimedOut) {
+    fill(150);
+    text("CAL G:-- A:--", calX, calY + calH / 2);
+    calAdvice = "Diagnostico: sin datos CAL";
+  } else if (calUiState == 3) {
+    if ((frameCount % 60) < 30) {
+      fill(255, 80, 80);
+      text("RECALIBRAR (quieto)  G:" + calGyro + " A:" + calAccel, calX, calY + calH / 2);
+    }
+    calAdviceColor = color(255, 120, 120);
+    if (calGyro < 2 && calAccel < 2) calAdvice = "Diagnostico: recalibrar GIRO + ACCEL";
+    else if (calGyro < 2)            calAdvice = "Diagnostico: recalibrar GIRO";
+    else                             calAdvice = "Diagnostico: recalibrar ACCEL";
+  } else if (calUiState == 2) {
+    fill(255, 220, 50);
+    text("CAL BAJA  G:" + calGyro + " A:" + calAccel, calX, calY + calH / 2);
+    calAdviceColor = color(255, 220, 50);
+    if (calGyro < 2 && calAccel < 2) calAdvice = "Diagnostico: recalibrar GIRO + ACCEL";
+    else if (calGyro < 2)            calAdvice = "Diagnostico: recalibrar GIRO";
+    else                             calAdvice = "Diagnostico: recalibrar ACCEL";
+  } else {
+    fill(0, 220, 80);
+    text("CAL OK  G:" + calGyro + " A:" + calAccel, calX, calY + calH / 2);
+    calAdviceColor = color(0, 220, 80);
+    calAdvice = "Diagnostico: calibracion estable";
+  }
+
+  if (calAdvice.length() > 0) {
+    fill(calAdviceColor);
+    textFont(fontUI); textSize(10); textAlign(LEFT, CENTER);
+    text(calAdvice, calX, calY - 2);
+  }
 }
 
 // ===================== COMBO DÍA =====================

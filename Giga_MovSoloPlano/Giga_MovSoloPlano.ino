@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "2.4"
+#define VERSION_M7 "2.5"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -97,6 +97,10 @@ uint8_t  bnoErrCount    = 0;
 const uint8_t BNO_MAX_ERR = 50;
 uint32_t bnoWarmupEndMs = 0;  // no contar errores hasta que millis() >= este valor
 uint32_t shotVolume = 0;
+uint8_t  calGyro         = 0;
+uint8_t  calAccel        = 0;
+const uint32_t CAL_REPORT_MS = 2000;
+uint32_t lastCalReportMs = 0;
 // ================================================================
 // Reinicio del BNO055 tras fallo I2C
 // ================================================================
@@ -293,6 +297,21 @@ void loop() {
         Serial.println(shotVal);
       }
     }
+  }
+
+  // --- 2b) Reporte de calibracion (gyro + accel) ---
+  if ((int32_t)(nowMs - lastCalReportMs) >= 0) {
+    lastCalReportMs = nowMs + CAL_REPORT_MS;
+
+    uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
+    bno.getCalibration(&sys, &gyro, &accel, &mag);
+    calGyro  = gyro;
+    calAccel = accel;
+
+    Serial.print("CAL,");
+    Serial.print(calGyro);
+    Serial.print(",");
+    Serial.println(calAccel);
   }
 
   // --- 3) LED blink ---
