@@ -115,6 +115,8 @@ int     shotCount   = 0;       // disparos en la sesión actual
 boolean shotPendiente = false; // shot recibido en sesión actual
 int     calGyro     = -1;      // -1 = sin datos de calibracion
 int     calAccel    = -1;
+int     calSys      = -1;      // calibracion sistema BNO055 (NDOF)
+int     calMag      = -1;      // calibracion magnetometro (NDOF)
 int     calUiState  = 0;       // 0=sin datos, 1=ok, 2=baja, 3=critica
 int     calBadStreak  = 0;
 int     calGoodStreak = 0;
@@ -223,6 +225,9 @@ boolean dianaPlayActive  = false;  // reproducción animada en la diana
 int     dianaPlayStartMs = 0;      // millis() al iniciar la reproducción
 float   dianaPlaySpeed   = 2.0;    // velocidad: 1x, 2x, 5x, 10x
 boolean dianaEscalaReal  = false;  // true = escala fija = diana real (DIANA_TAMANO_MM)
+boolean dianaZoomFijo    = false;  // true = zoom fijo independiente del recorrido
+float   dianaZoomGrados  = 0.5;   // mitad del rango visible en grados (zoom fijo)
+float   dianaMaxDevActual = 0.5;  // valor auto de maxDev del ultimo frame (para arrancar zoom fijo)
 int     dianaCbEscX = -1, dianaCbEscY = -1;  // coords del checkbox "Escala real"
 
 int btnAlinearX, btnAlinearY, btnAlinearW = 130, btnAlinearH = 20;
@@ -323,12 +328,16 @@ void serialEvent(Serial p) {
     String[] c = split(linea, ',');
     if (c.length >= 3) {
       try {
-        calGyro = Integer.parseInt(c[1].trim());
+        calGyro  = Integer.parseInt(c[1].trim());
         calAccel = Integer.parseInt(c[2].trim());
+        if (c.length >= 5) {
+          calSys = Integer.parseInt(c[3].trim());
+          calMag = Integer.parseInt(c[4].trim());
+        }
 
         calLastRxMs = millis();
         boolean crit = (calGyro == 0);
-        boolean baja = (calGyro < 2 || calAccel < 2);
+        boolean baja = (calGyro < 2 || calAccel < 2 || (calMag >= 0 && calMag < 2));
 
         if (crit) {
           calCritStreak++;
@@ -1096,8 +1105,8 @@ void dibujarHeader() {
   fill(200); textFont(fontUI); textSize(12); textAlign(CENTER, CENTER);
   text("♪ Test sonido", btnSndX + btnSndW / 2, btnSndY + btnSndH / 2);
 
-  // Estado de calibracion IMUPLUS (gyro + accel) enviado por firmware: CAL,g,a
-  int calW = 255;
+  // Estado de calibracion NDOF (gyro + accel + sys + mag) enviado por firmware: CAL,g,a,sys,mag
+  int calW = 320;
   int calH = 18;
   int calX = width - btnSndW - calW - 24;
   int calY = HEADER_H - calH - 6;
@@ -1105,29 +1114,34 @@ void dibujarHeader() {
   boolean calTimedOut = (calLastRxMs == 0) || (millis() - calLastRxMs > CAL_RX_TIMEOUT_MS);
   String calAdvice = "";
   color calAdviceColor = color(150);
+  String calMagStr = (calMag >= 0) ? (" M:" + calMag) : "";
+  String calSysStr = (calSys >= 0) ? ("S:" + calSys + " ") : "";
   if (calGyro < 0 || calAccel < 0 || calTimedOut) {
     fill(150);
-    text("CAL G:-- A:--", calX, calY + calH / 2);
+    text("CAL S:-- G:-- A:-- M:--", calX, calY + calH / 2);
     calAdvice = "Diagnostico: sin datos CAL";
   } else if (calUiState == 3) {
     if ((frameCount % 60) < 30) {
       fill(255, 80, 80);
-      text("RECALIBRAR (quieto)  G:" + calGyro + " A:" + calAccel, calX, calY + calH / 2);
+      text("RECALIBRAR  " + calSysStr + "G:" + calGyro + " A:" + calAccel + calMagStr, calX, calY + calH / 2);
     }
     calAdviceColor = color(255, 120, 120);
-    if (calGyro < 2 && calAccel < 2) calAdvice = "Diagnostico: recalibrar GIRO + ACCEL";
-    else if (calGyro < 2)            calAdvice = "Diagnostico: recalibrar GIRO";
-    else                             calAdvice = "Diagnostico: recalibrar ACCEL";
+    if      (calMag >= 0 && calMag < 2 && calGyro == 0) calAdvice = "Recalibrar GIRO (quieto) + BRUJULA (giro en 8)";
+    else if (calMag >= 0 && calMag < 2)                 calAdvice = "BRUJULA sin calibrar — girar el arma en forma de 8";
+    else if (calGyro < 2 && calAccel < 2)               calAdvice = "Diagnostico: recalibrar GIRO + ACCEL";
+    else if (calGyro < 2)                               calAdvice = "Diagnostico: recalibrar GIRO";
+    else                                                calAdvice = "Diagnostico: recalibrar ACCEL";
   } else if (calUiState == 2) {
     fill(255, 220, 50);
-    text("CAL BAJA  G:" + calGyro + " A:" + calAccel, calX, calY + calH / 2);
+    text("CAL BAJA  " + calSysStr + "G:" + calGyro + " A:" + calAccel + calMagStr, calX, calY + calH / 2);
     calAdviceColor = color(255, 220, 50);
-    if (calGyro < 2 && calAccel < 2) calAdvice = "Diagnostico: recalibrar GIRO + ACCEL";
-    else if (calGyro < 2)            calAdvice = "Diagnostico: recalibrar GIRO";
-    else                             calAdvice = "Diagnostico: recalibrar ACCEL";
+    if      (calMag >= 0 && calMag < 2)   calAdvice = "BRUJULA baja — girar el arma en forma de 8";
+    else if (calGyro < 2 && calAccel < 2) calAdvice = "Diagnostico: recalibrar GIRO + ACCEL";
+    else if (calGyro < 2)                 calAdvice = "Diagnostico: recalibrar GIRO";
+    else                                  calAdvice = "Diagnostico: recalibrar ACCEL";
   } else {
     fill(0, 220, 80);
-    text("CAL OK  G:" + calGyro + " A:" + calAccel, calX, calY + calH / 2);
+    text("CAL OK  " + calSysStr + "G:" + calGyro + " A:" + calAccel + calMagStr, calX, calY + calH / 2);
     calAdviceColor = color(0, 220, 80);
     calAdvice = "Diagnostico: calibracion estable";
   }
@@ -1833,13 +1847,16 @@ void dibujarDiana() {
   // maxDev = el mayor de los dos ejes + 25 % de margen;
   // mínimo: la mitad de la diana física para que el cuadrado siempre sea visible
   float maxDev;
-  if (dianaEscalaReal) {
+  if (dianaZoomFijo) {
+    maxDev = dianaZoomGrados;  // zoom fijo: independiente del recorrido capturado
+  } else if (dianaEscalaReal) {
     // Escala fija: la diana completa (DIANA_TAMANO_MM × DIANA_TAMANO_MM) llena el radio r.
     // Los puntos que salgan fuera de la diana se dibujan igualmente más allá del borde.
     maxDev = dianaHalfDeg;
   } else {
     maxDev = max(max(maxAbsDr, maxAbsDy) * 1.25f, dianaHalfDeg * 0.5f);
   }
+  dianaMaxDevActual = maxDev;  // guardar para poder arrancar zoom fijo desde el valor auto
 
   float sxShot = cx + map(dyShot * yawDir, -maxDev, maxDev, -r, r);
   float syShot = cy - map(drShot, -maxDev, maxDev, -r, r);
@@ -2078,6 +2095,32 @@ void dibujarDiana() {
     rect(skipPlusX, skipY, skipBtnW, skipBtnH, 3);
     fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
     text("+", skipPlusX + skipBtnW / 2, skipY + skipBtnH / 2);
+  }
+
+  // ── Control de zoom fijo ─ − [auto / N.NNN°] + ────────────────────
+  {
+    int zfBtnW = 22, zfBtnH = 18, zfLblW = 104;
+    int zfRowY  = btnZoomDianaY + btnZoomDianaH + 4;
+    int zfPlusX = btnZoomDianaX + btnZoomDianaW - zfBtnW;
+    int zfLblX  = zfPlusX - zfLblW - 2;
+    int zfMinX  = zfLblX - zfBtnW - 2;
+    boolean hZfM = mouseX >= zfMinX  && mouseX <= zfMinX  + zfBtnW && mouseY >= zfRowY && mouseY <= zfRowY + zfBtnH;
+    boolean hZfP = mouseX >= zfPlusX && mouseX <= zfPlusX + zfBtnW && mouseY >= zfRowY && mouseY <= zfRowY + zfBtnH;
+    fill(hZfM ? color(180, 60, 60) : color(70, 30, 30)); noStroke();
+    rect(zfMinX, zfRowY, zfBtnW, zfBtnH, 3);
+    fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
+    text("\u2212", zfMinX + zfBtnW / 2, zfRowY + zfBtnH / 2);
+    fill(dianaZoomFijo ? color(30, 70, 30) : color(30));
+    stroke(dianaZoomFijo ? color(0, 200, 80) : COL_BORDE); strokeWeight(1);
+    rect(zfLblX, zfRowY, zfLblW, zfBtnH, 2);
+    fill(dianaZoomFijo ? color(0, 220, 80) : COL_TEXTDIM);
+    textFont(fontMono); textSize(11); textAlign(CENTER, CENTER);
+    text(dianaZoomFijo ? (nf(dianaZoomGrados, 1, 3) + "\u00b0") : "zoom auto",
+         zfLblX + zfLblW / 2, zfRowY + zfBtnH / 2);
+    fill(hZfP ? color(60, 180, 60) : color(30, 80, 30)); noStroke();
+    rect(zfPlusX, zfRowY, zfBtnW, zfBtnH, 3);
+    fill(200); textFont(fontUI); textSize(14); textAlign(CENTER, CENTER);
+    text("+", zfPlusX + zfBtnW / 2, zfRowY + zfBtnH / 2);
   }
 
   int legX = gx + 12;
@@ -2414,11 +2457,42 @@ void mousePressed() {
         return;
       }
     }
+    // ── Control de zoom fijo (botones − / etiqueta / +) ─────────────
+    {
+      int zfBtnW = 22, zfBtnH = 18, zfLblW = 104;
+      int btnZoomDianaW_ = 140;
+      int btnZoomDianaX_ = gxD + gwD - btnZoomDianaW_ - 10;
+      int btnZoomDianaY_ = gyD + 10;
+      int zfRowY  = btnZoomDianaY_ + 18 + 4;
+      int zfPlusX = btnZoomDianaX_ + btnZoomDianaW_ - zfBtnW;
+      int zfLblX  = zfPlusX - zfLblW - 2;
+      int zfMinX  = zfLblX - zfBtnW - 2;
+      if (mouseY >= zfRowY && mouseY <= zfRowY + zfBtnH) {
+        if (mouseX >= zfMinX && mouseX <= zfMinX + zfBtnW) {
+          if (!dianaZoomFijo) { dianaZoomFijo = true; dianaEscalaReal = false; dianaZoomGrados = dianaMaxDevActual; }
+          float paso = dianaZoomGrados <= 0.20f ? 0.02f : dianaZoomGrados <= 1.0f ? 0.05f : 0.1f;
+          dianaZoomGrados = max(0.04f, dianaZoomGrados - paso);
+          return;
+        }
+        if (mouseX >= zfPlusX && mouseX <= zfPlusX + zfBtnW) {
+          if (!dianaZoomFijo) { dianaZoomFijo = true; dianaEscalaReal = false; dianaZoomGrados = dianaMaxDevActual; }
+          float paso = dianaZoomGrados < 0.20f ? 0.02f : dianaZoomGrados < 1.0f ? 0.05f : 0.1f;
+          dianaZoomGrados += paso;
+          return;
+        }
+        if (mouseX >= zfLblX && mouseX <= zfLblX + zfLblW) {
+          dianaZoomFijo = !dianaZoomFijo;
+          if (dianaZoomFijo) { dianaEscalaReal = false; dianaZoomGrados = dianaMaxDevActual; }
+          return;
+        }
+      }
+    }
     // Checkbox "Escala real"
     if (dianaCbEscX >= 0 &&
         mouseX >= dianaCbEscX && mouseX <= dianaCbEscX + 260 &&
         mouseY >= dianaCbEscY && mouseY <= dianaCbEscY + 14) {
       dianaEscalaReal = !dianaEscalaReal;
+      if (dianaEscalaReal) dianaZoomFijo = false;  // mutuamente exclusivos
       return;
     }
   }

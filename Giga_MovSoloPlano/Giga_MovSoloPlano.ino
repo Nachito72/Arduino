@@ -30,7 +30,7 @@
 #include <Adafruit_BNO055.h>
 
 // ===================== VERSIÓN =====================
-#define VERSION_M7 "2.5"
+#define VERSION_M7 "2.7"
 
 // ===================== LED =====================
 const uint8_t LED_SHOT_PIN = LED_BUILTIN;
@@ -307,11 +307,16 @@ void loop() {
     bno.getCalibration(&sys, &gyro, &accel, &mag);
     calGyro  = gyro;
     calAccel = accel;
+    mag = 3;  // IMUPLUS no usa magnetómetro — forzar a 3 para evitar confusión en UI
 
     Serial.print("CAL,");
     Serial.print(calGyro);
     Serial.print(",");
-    Serial.println(calAccel);
+    Serial.print(calAccel);
+    Serial.print(",");
+    Serial.print(sys);
+    Serial.print(",");
+    Serial.println(mag);
   }
 
   // --- 3) LED blink ---
